@@ -1,61 +1,61 @@
 const std = @import("std");
 
 const files = &[_][]const u8 {
-    "shared/crypto.c",
-    "shared/geom.c",
-    "shared/glemu.c",
-    "shared/stream.c",
-    "shared/tools.c",
-    "shared/zip.c",
-    "engine/interface/command.c",
-    "engine/interface/control.c",
-    "engine/interface/cubestd.c",
-    "engine/interface/console.c",
-    "engine/interface/input.c",
-    "engine/interface/menus.c",
-    "engine/interface/sound.c",
-    "engine/interface/textedit.c",
-    "engine/interface/ui.c",
-    "engine/model/animmodel.c",
-    "engine/model/hitzone.c",
-    "engine/model/obj.c",
-    "engine/model/ragdoll.c",
-    "engine/model/skelmodel.c",
-    "engine/render/aa.c",
-    "engine/render/ao.c",
-    "engine/render/csm.c",
-    "engine/render/grass.c",
-    "engine/render/hdr.c",
-    "engine/render/hud.c",
-    "engine/render/normal.c",
-    "engine/render/octarender.c",
-    "engine/render/radiancehints.c",
-    "engine/render/renderalpha.c",
-    "engine/render/rendergl.c",
-    "engine/render/renderlights.c",
-    "engine/render/rendermodel.c",
-    "engine/render/renderparticles.c",
-    "engine/render/rendersky.c",
-    "engine/render/rendertext.c",
-    "engine/render/rendertimers.c",
-    "engine/render/renderva.c",
-    "engine/render/renderwindow.c",
-    "engine/render/shader.c",
-    "engine/render/stain.c",
-    "engine/render/texture.c",
-    "engine/render/water.c",
-    "engine/world/bih.c",
-    "engine/world/dynlight.c",
-    "engine/world/heightmap.c",
-    "engine/world/light.c",
-    "engine/world/material.c",
-    "engine/world/mpr.c",
-    "engine/world/octaedit.c",
-    "engine/world/octaworld.c",
-    "engine/world/physics.c",
-    "engine/world/raycube.c",
-    "engine/world/world.c",
-    "engine/world/worldio.c",
+    "shared/crypto.cpp",
+    "shared/geom.cpp",
+    "shared/glemu.cpp",
+    "shared/stream.cpp",
+    "shared/tools.cpp",
+    "shared/zip.cpp",
+    "engine/interface/command.cpp",
+    "engine/interface/control.cpp",
+    "engine/interface/cubestd.cpp",
+    "engine/interface/console.cpp",
+    "engine/interface/input.cpp",
+    "engine/interface/menus.cpp",
+    "engine/interface/sound.cpp",
+    "engine/interface/textedit.cpp",
+    "engine/interface/ui.cpp",
+    "engine/model/animmodel.cpp",
+    "engine/model/hitzone.cpp",
+    "engine/model/obj.cpp",
+    "engine/model/ragdoll.cpp",
+    "engine/model/skelmodel.cpp",
+    "engine/render/aa.cpp",
+    "engine/render/ao.cpp",
+    "engine/render/csm.cpp",
+    "engine/render/grass.cpp",
+    "engine/render/hdr.cpp",
+    "engine/render/hud.cpp",
+    "engine/render/normal.cpp",
+    "engine/render/octarender.cpp",
+    "engine/render/radiancehints.cpp",
+    "engine/render/renderalpha.cpp",
+    "engine/render/rendergl.cpp",
+    "engine/render/renderlights.cpp",
+    "engine/render/rendermodel.cpp",
+    "engine/render/renderparticles.cpp",
+    "engine/render/rendersky.cpp",
+    "engine/render/rendertext.cpp",
+    "engine/render/rendertimers.cpp",
+    "engine/render/renderva.cpp",
+    "engine/render/renderwindow.cpp",
+    "engine/render/shader.cpp",
+    "engine/render/stain.cpp",
+    "engine/render/texture.cpp",
+    "engine/render/water.cpp",
+    "engine/world/bih.cpp",
+    "engine/world/dynlight.cpp",
+    "engine/world/heightmap.cpp",
+    "engine/world/light.cpp",
+    "engine/world/material.cpp",
+    "engine/world/mpr.cpp",
+    "engine/world/octaedit.cpp",
+    "engine/world/octaworld.cpp",
+    "engine/world/physics.cpp",
+    "engine/world/raycube.cpp",
+    "engine/world/world.cpp",
+    "engine/world/worldio.cpp",
 };
 
 const flags = f: {
@@ -75,14 +75,16 @@ const flags = f: {
 
 pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
-    const libprimis = b.addSharedLibrary("libprimis.so", null);
+    const libprimis = b.addStaticLibrary("libprimis", null);
 
-    libprimis.addCSourceFiles(files, &[_][]const u8{});
+    libprimis.addCSourceFiles(files, flags);
 
     libprimis.addIncludeDir("shared");
     libprimis.addIncludeDir("engine");
+    libprimis.addIncludeDir("/usr/include/SDL2");
     libprimis.addIncludeDir("/usr/X11R6/include");
 
+    libprimis.linkLibC();
     libprimis.linkLibCpp();
     libprimis.linkSystemLibrary("libm");
     libprimis.linkSystemLibrary("libz");
@@ -93,7 +95,6 @@ pub fn build(b: *std.build.Builder) void {
     libprimis.linkSystemLibrary("libSDL2_image");
     libprimis.linkSystemLibrary("libSDL2_mixer");
     libprimis.linkSystemLibrary("libSDL2_ttf");
-
 
     libprimis.setBuildMode(mode);
     libprimis.install();
