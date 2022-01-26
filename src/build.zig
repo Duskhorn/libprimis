@@ -75,7 +75,7 @@ const flags = f: {
 
 pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
-    const libprimis = b.addStaticLibrary("libprimis", null);
+    const libprimis = b.addSharedLibrary("primis", null, .unversioned); //prefix "lib" gets added automatically
 
     libprimis.addCSourceFiles(files, flags);
 
@@ -86,15 +86,15 @@ pub fn build(b: *std.build.Builder) void {
 
     libprimis.linkLibC();
     libprimis.linkLibCpp();
-    libprimis.linkSystemLibrary("libm");
-    libprimis.linkSystemLibrary("libz");
-    libprimis.linkSystemLibrary("libGL");
-    libprimis.linkSystemLibrary("librt");
-    libprimis.linkSystemLibrary("libX11");
-    libprimis.linkSystemLibrary("libSDL2");
-    libprimis.linkSystemLibrary("libSDL2_image");
-    libprimis.linkSystemLibrary("libSDL2_mixer");
-    libprimis.linkSystemLibrary("libSDL2_ttf");
+    libprimis.linkSystemLibrary("m");
+    libprimis.linkSystemLibrary("z");
+    libprimis.linkSystemLibrary("GL");
+    libprimis.linkSystemLibrary("rt");
+    libprimis.linkSystemLibrary("X11");
+    libprimis.linkSystemLibrary("SDL2");
+    libprimis.linkSystemLibrary("SDL2_image");
+    libprimis.linkSystemLibrary("SDL2_mixer");
+    libprimis.linkSystemLibrary("SDL2_ttf");
 
     libprimis.setBuildMode(mode);
     libprimis.install();
