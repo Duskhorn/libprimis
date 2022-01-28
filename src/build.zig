@@ -67,7 +67,8 @@ const flags = f: {
         "-Wall",
         "-fsigned-char",
         "-fno-rtti",
-        "-fpic"
+        "-fpic",
+        "-D_GLIBCXX_USE_CXX11_ABI=0"
     };
     break :f fl; //TODO: coverage build flags 
 };
@@ -77,7 +78,7 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
     const libprimis = b.addSharedLibrary("primis", null, .unversioned); //prefix "lib" gets added automatically
 
-    libprimis.addCSourceFiles(files, flags ++ "D_GLIBCXX_USE_CXX11_ABI=0");
+    libprimis.addCSourceFiles(files, flags);
 
     libprimis.addIncludeDir("shared");
     libprimis.addIncludeDir("engine");
