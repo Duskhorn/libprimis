@@ -77,7 +77,7 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
     const libprimis = b.addSharedLibrary("primis", null, .unversioned); //prefix "lib" gets added automatically
 
-    libprimis.addCSourceFiles(files, flags);
+    libprimis.addCSourceFiles(files, flags ++ "D_GLIBCXX_USE_CXX11_ABI=0");
 
     libprimis.addIncludeDir("shared");
     libprimis.addIncludeDir("engine");
