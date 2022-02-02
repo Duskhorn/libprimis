@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const files = &[_][]const u8 {
-    "shared/crypto.cpp",
     "shared/geom.cpp",
     "shared/glemu.cpp",
     "shared/stream.cpp",
