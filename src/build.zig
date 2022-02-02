@@ -59,10 +59,10 @@ const files = &[_][]const u8 {
 
 const flags = f: {
     const fl = &[_][]const u8{
-        "-O3",
-        "-ffast-math",
+//        "-O3",
+//        "-ffast-math",
         "-std=c++17",
-        "-march=x86-64",
+//        "-march=x86-64",
         "-Wall",
         "-fsigned-char",
         "-fno-rtti",
@@ -80,7 +80,10 @@ pub fn build(b: *std.build.Builder) void {
     libprimis.addCSourceFiles(files, flags);
 
     libprimis.addIncludeDir("shared");
-    libprimis.addIncludeDir("engine");
+    libprimis.addIncludeDir("engine/interface");
+    libprimis.addIncludeDir("engine/model");
+    libprimis.addIncludeDir("engine/render");
+    libprimis.addIncludeDir("engine/world");
     libprimis.addIncludeDir("/usr/include/SDL2");
     libprimis.addIncludeDir("/usr/X11R6/include");
 

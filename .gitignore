@@ -24,3 +24,5 @@ docs
 # zig build files
 src/zig-out
 src/zig-cache
+
+.fake
