@@ -80,6 +80,7 @@ pub fn build(b: *std.build.Builder) void {
     libprimis.addCSourceFiles(files, flags);
 
     libprimis.addIncludeDir("shared");
+    libprimis.addIncludeDir("engine");
     libprimis.addIncludeDir("engine/interface");
     libprimis.addIncludeDir("engine/model");
     libprimis.addIncludeDir("engine/render");
