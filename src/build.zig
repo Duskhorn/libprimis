@@ -26,6 +26,7 @@ const files = &[_][]const u8 {
     "engine/render/grass.cpp",
     "engine/render/hdr.cpp",
     "engine/render/hud.cpp",
+    "engine/render/imagedata.cpp",
     "engine/render/normal.cpp",
     "engine/render/octarender.cpp",
     "engine/render/radiancehints.cpp",
