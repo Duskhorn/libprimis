@@ -167,121 +167,186 @@ namespace //internal functions incl. AA implementations
     /* FXAA: Fast approXimate Anti Aliasing */
     //////////////////////////////////////////
 
-    GLuint fxaafbo = 0,
-           fxaatex = 0;
-
-    void cleanupfxaa(); //fxn prototype required due to VARFP initialization chicken/egg
-
-    VARFP(fxaa, 0, 0, 1, cleanupfxaa());
-    VARFP(fxaaquality, 0, 1, 3, cleanupfxaa());
-    VARFP(fxaagreenluma, 0, 0, 1, cleanupfxaa());
-
-    int fxaatype = -1;
-    Shader *fxaashader = nullptr;
-
-    void loadfxaashaders()
+    namespace fxaa
     {
-        fxaatype = tqaatype >= 0 ? tqaatype : (!fxaagreenluma && !intel_texalpha_bug ? AA_Luma : AA_Unused);
-        loadhdrshaders(fxaatype);
-        string opts;
-        int optslen = 0;
-        if(tqaa || fxaagreenluma || intel_texalpha_bug)
+        GLuint fxaafbo = 0,
+               fxaatex = 0;
+
+        void cleanupfxaa(); //fxn prototype required due to VARFP initialization chicken/egg
+
+        VARFP(fxaa, 0, 0, 1, cleanupfxaa());
+        VARFP(fxaaquality, 0, 1, 3, cleanupfxaa());
+        VARFP(fxaagreenluma, 0, 0, 1, cleanupfxaa());
+
+        int fxaatype = -1;
+        Shader *fxaashader = nullptr;
+
+        void loadfxaashaders()
         {
-            opts[optslen++] = 'g';
+            fxaatype = tqaatype >= 0 ? tqaatype : (!fxaagreenluma && !intel_texalpha_bug ? AA_Luma : AA_Unused);
+            loadhdrshaders(fxaatype);
+            string opts;
+            int optslen = 0;
+            if(tqaa || fxaagreenluma || intel_texalpha_bug)
+            {
+                opts[optslen++] = 'g';
+            }
+            opts[optslen] = '\0';
+            DEF_FORMAT_STRING(fxaaname, "fxaa%d%s", fxaaquality, opts);
+            fxaashader = generateshader(fxaaname, "fxaashaders %d \"%s\"", fxaaquality, opts);
         }
-        opts[optslen] = '\0';
-        DEF_FORMAT_STRING(fxaaname, "fxaa%d%s", fxaaquality, opts);
-        fxaashader = generateshader(fxaaname, "fxaashaders %d \"%s\"", fxaaquality, opts);
+
+        void clearfxaashaders()
+        {
+            fxaatype = -1;
+            fxaashader = nullptr;
+        }
+
+        void setupfxaa(int w, int h)
+        {
+            if(!fxaatex)
+            {
+                glGenTextures(1, &fxaatex);
+            }
+            if(!fxaafbo)
+            {
+                glGenFramebuffers_(1, &fxaafbo);
+            }
+            glBindFramebuffer_(GL_FRAMEBUFFER, fxaafbo);
+            createtexture(fxaatex, w, h, nullptr, 3, 1, tqaa || (!fxaagreenluma && !intel_texalpha_bug) ? GL_RGBA8 : GL_RGB, GL_TEXTURE_RECTANGLE);
+            glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, fxaatex, 0);
+            gbuf.bindgdepth();
+            if(glCheckFramebufferStatus_(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            {
+                fatal("failed allocating FXAA buffer!");
+            }
+            glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+
+            loadfxaashaders();
+        }
+
+        void cleanupfxaa()
+        {
+            if(fxaafbo)
+            {
+                glDeleteFramebuffers_(1, &fxaafbo);
+                fxaafbo = 0;
+            }
+            if(fxaatex)
+            {
+                glDeleteTextures(1, &fxaatex);
+                fxaatex = 0;
+            }
+            clearfxaashaders();
+        }
+
+        void dofxaa(GLuint outfbo = 0)
+        {
+            timer *fxaatimer = begintimer("fxaa");
+            glBindFramebuffer_(GL_FRAMEBUFFER, tqaa ? tqaafbo[0] : outfbo);
+            fxaashader->set();
+            glBindTexture(GL_TEXTURE_RECTANGLE, fxaatex);
+            screenquad(vieww, viewh);
+            if(tqaa)
+            {
+                resolvetqaa(outfbo);
+            }
+            endtimer(fxaatimer);
+        }
+        //end of FXAA code
     }
-
-    void clearfxaashaders()
-    {
-        fxaatype = -1;
-        fxaashader = nullptr;
-    }
-
-    void setupfxaa(int w, int h)
-    {
-        if(!fxaatex)
-        {
-            glGenTextures(1, &fxaatex);
-        }
-        if(!fxaafbo)
-        {
-            glGenFramebuffers_(1, &fxaafbo);
-        }
-        glBindFramebuffer_(GL_FRAMEBUFFER, fxaafbo);
-        createtexture(fxaatex, w, h, nullptr, 3, 1, tqaa || (!fxaagreenluma && !intel_texalpha_bug) ? GL_RGBA8 : GL_RGB, GL_TEXTURE_RECTANGLE);
-        glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, fxaatex, 0);
-        gbuf.bindgdepth();
-        if(glCheckFramebufferStatus_(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        {
-            fatal("failed allocating FXAA buffer!");
-        }
-        glBindFramebuffer_(GL_FRAMEBUFFER, 0);
-
-        loadfxaashaders();
-    }
-
-    void cleanupfxaa()
-    {
-        if(fxaafbo)
-        {
-            glDeleteFramebuffers_(1, &fxaafbo);
-            fxaafbo = 0;
-        }
-        if(fxaatex)
-        {
-            glDeleteTextures(1, &fxaatex);
-            fxaatex = 0;
-        }
-        clearfxaashaders();
-    }
-
-    void dofxaa(GLuint outfbo = 0)
-    {
-        timer *fxaatimer = begintimer("fxaa");
-        glBindFramebuffer_(GL_FRAMEBUFFER, tqaa ? tqaafbo[0] : outfbo);
-        fxaashader->set();
-        glBindTexture(GL_TEXTURE_RECTANGLE, fxaatex);
-        screenquad(vieww, viewh);
-        if(tqaa)
-        {
-            resolvetqaa(outfbo);
-        }
-        endtimer(fxaatimer);
-    }
-    //end of FXAA code
-
     /* SMAA: Subpixel Morphological Anti Aliasing */
     ////////////////////////////////////////////////
 
-    //smaa graphics buffers
-    GLuint smaaareatex = 0,
-           smaasearchtex = 0,
-           smaafbo[4] = { 0, 0, 0, 0 },
-           smaatex[5] = { 0, 0, 0, 0, 0 };
-    //affects subsample vector direction
-    int smaasubsampleorder = -1;
+    class subpixelaa
+    {
+        public:
+            GLuint smaafbo[4] = { 0, 0, 0, 0 };
+            int smaatype = -1;
 
-    void cleanupsmaa(); //fxn prototype required due to VARFP initialization chicken/egg
+            void cleanupsmaa();
+            void setupsmaa(int w, int h);
 
+            //executes the smaa process on the given output framebuffer object (outfbo)
+            //split toggles splitting process into two passes
+            void dosmaa(GLuint outfbo = 0, bool split = false);
+
+            //debug view for smaa buffers
+            void viewsmaa();
+        private:
+            //smaa graphics buffers
+            GLuint smaaareatex = 0,
+                   smaasearchtex = 0,
+                   smaatex[5] = { 0, 0, 0, 0, 0 };
+            //affects subsample vector direction
+            int smaasubsampleorder = -1;
+            Shader  *smaalumaedgeshader = nullptr,
+                    *smaacoloredgeshader = nullptr,
+                    *smaablendweightshader = nullptr,
+                    *smaaneighborhoodshader = nullptr;
+
+            static constexpr int smaaareatexwidth = 160,
+                                 smaaareatexheight = 560;
+
+            static constexpr int smaasearchtexwidth  = 66,
+                                 smaasearchtexheight = 33;
+
+            uchar smaasearchdata[smaasearchtexwidth*smaasearchtexheight];
+            uchar smaaareadata[smaaareatexwidth*smaaareatexheight*2];
+
+            bool smaasearchdatainited = false;
+            bool smaaareadatainited = false;
+
+            static constexpr int orthoedges[][2] =
+            {
+                {0, 0}, {3, 0}, {0, 3}, {3, 3}, {1, 0}, {4, 0}, {1, 3}, {4, 3},
+                {0, 1}, {3, 1}, {0, 4}, {3, 4}, {1, 1}, {4, 1}, {1, 4}, {4, 4}
+            };
+            static constexpr int edgesdiag[][2] =
+            {
+                {0, 0}, {1, 0}, {0, 2}, {1, 2}, {2, 0}, {3, 0}, {2, 2}, {3, 2},
+                {0, 1}, {1, 1}, {0, 3}, {1, 3}, {2, 1}, {3, 1}, {2, 3}, {3, 3}
+            };
+
+            static constexpr float offsetsortho[] = { 0.0f, -0.25f, 0.25f, -0.125f, 0.125f, -0.375f, 0.375f };
+            static constexpr float offsetsdiag[][2] = {{ 0.0f, 0.0f, }, { 0.25f, -0.25f }, { -0.25f, 0.25f }, { 0.125f, -0.125f }, { -0.125f, 0.125f } };
+
+            void gensmaasearchdata();
+            vec2 areaunderortho(const vec2 &p1, const vec2 &p2, float x);
+            void loadsmaashaders(bool split = false);
+            void clearsmaashaders();
+            vec2 areaortho(float p1x, float p1y, float p2x, float p2y, float left);
+            void smootharea(float d, vec2 &a1, vec2 &a2);
+            vec2 areaortho(int pattern, float left, float right, float offset);
+
+            float areaunderdiag(const vec2 &p1, const vec2 &p2, const vec2 &p);
+            vec2 areadiag(const vec2 &p1, const vec2 &p2, float left);
+            vec2 areadiag(float p1x, float p1y, float p2x, float p2y, float d, float left, const vec2 &offset, int pattern);
+            vec2 areadiag2(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y, float p4x, float p4y, float d, float left, const vec2 &offset, int pattern);
+            vec2 areadiag(int pattern, float left, float right, const vec2 &offset);
+            void gensmaaareadata();
+    };
+
+    subpixelaa smaarenderer;
+
+    /* smaa vars are set by `setupsmaa()` automatically: if TQAA and/or MSAA are
+     * enabled, the following variables will be set to 1
+     *
+     * generally, do not change these vars from ingame
+     */
+    VAR(smaat2x, 1, 0, 0); //SMAA Temporal 2x (temporal antialiasing)
+    VAR(smaas2x, 1, 0, 0); //SMAA Split 2x (multisample antialiasing)
+    VAR(smaa4x, 1, 0, 0);  //SMAA 4x (both temporal and multisample)
     VARFP(smaa, 0, 0, 1, gbuf.cleanupgbuffer()); //toggles smaa
     VARFP(smaaspatial, 0, 1, 1, gbuf.cleanupgbuffer());
-    VARFP(smaaquality, 0, 2, 3, cleanupsmaa());
-    VARFP(smaacoloredge, 0, 0, 1, cleanupsmaa()); //toggle between color & luma edge shaders
-    VARFP(smaagreenluma, 0, 0, 1, cleanupsmaa());
-    VARF(smaadepthmask, 0, 1, 1, cleanupsmaa());
-    VARF(smaastencil, 0, 1, 1, cleanupsmaa());
+    VARFP(smaaquality, 0, 2, 3, smaarenderer.cleanupsmaa());
+    VARFP(smaacoloredge, 0, 0, 1, smaarenderer.cleanupsmaa()); //toggle between color & luma edge shaders
+    VARFP(smaagreenluma, 0, 0, 1, smaarenderer.cleanupsmaa());
+    VARF(smaadepthmask, 0, 1, 1, smaarenderer.cleanupsmaa());
+    VARF(smaastencil, 0, 1, 1, smaarenderer.cleanupsmaa());
     VAR(debugsmaa, 0, 0, 5); //see viewsmaa() below, displays one of the five smaa texs
 
-    int smaatype = -1;
-    Shader  *smaalumaedgeshader = nullptr,
-            *smaacoloredgeshader = nullptr,
-            *smaablendweightshader = nullptr,
-            *smaaneighborhoodshader = nullptr;
-
-    void loadsmaashaders(bool split = false)
+    void subpixelaa::loadsmaashaders(bool split)
     {
         smaatype = tqaatype >= 0 ? tqaatype : (!smaagreenluma && !intel_texalpha_bug && !smaacoloredge ? AA_Luma : AA_Unused);
         if(split)
@@ -345,7 +410,7 @@ namespace //internal functions incl. AA implementations
         }
     }
 
-    void clearsmaashaders()
+    void subpixelaa::clearsmaashaders()
     {
         smaatype = -1;
         smaalumaedgeshader = nullptr;
@@ -354,12 +419,7 @@ namespace //internal functions incl. AA implementations
         smaaneighborhoodshader = nullptr;
     }
 
-    constexpr int smaasearchtexwidth  = 66,
-                  smaasearchtexheight = 33;
-    uchar smaasearchdata[smaasearchtexwidth*smaasearchtexheight];
-    bool smaasearchdatainited = false;
-
-    void gensmaasearchdata()
+    void subpixelaa::gensmaasearchdata()
     {
         if(smaasearchdatainited)
         {
@@ -416,7 +476,7 @@ namespace //internal functions incl. AA implementations
         smaasearchdatainited = true;
     }
 
-    vec2 areaunderortho(const vec2 &p1, const vec2 &p2, float x)
+    vec2 subpixelaa::areaunderortho(const vec2 &p1, const vec2 &p2, float x)
     {
         vec2 d(p2.x - p1.x, p2.y - p1.y);
         float y1 = p1.y + (x - p1.x)*d.y/d.x,
@@ -441,18 +501,12 @@ namespace //internal functions incl. AA implementations
         return a;
     }
 
-    constexpr int orthoedges[][2] =
-    {
-        {0, 0}, {3, 0}, {0, 3}, {3, 3}, {1, 0}, {4, 0}, {1, 3}, {4, 3},
-        {0, 1}, {3, 1}, {0, 4}, {3, 4}, {1, 1}, {4, 1}, {1, 4}, {4, 4}
-    };
-
-    vec2 areaortho(float p1x, float p1y, float p2x, float p2y, float left)
+    vec2 subpixelaa::areaortho(float p1x, float p1y, float p2x, float p2y, float left)
     {
         return areaunderortho(vec2(p1x, p1y), vec2(p2x, p2y), left);
     }
 
-    void smootharea(float d, vec2 &a1, vec2 &a2)
+    void subpixelaa::smootharea(float d, vec2 &a1, vec2 &a2)
     {
         vec2 b1(sqrtf(a1.x*2)*0.5f, sqrtf(a1.y*2)*0.5f),
              b2(sqrtf(a2.x*2)*0.5f, sqrtf(a2.y*2)*0.5f);
@@ -461,7 +515,7 @@ namespace //internal functions incl. AA implementations
         a2.lerp(b2, a2, p);
     }
 
-    vec2 areaortho(int pattern, float left, float right, float offset)
+    vec2 subpixelaa::areaortho(int pattern, float left, float right, float offset)
     {
         float d = left + right + 1,
               o1 = offset + 0.5f,
@@ -551,7 +605,7 @@ namespace //internal functions incl. AA implementations
         return vec2(0, 0);
     }
 
-    float areaunderdiag(const vec2 &p1, const vec2 &p2, const vec2 &p)
+    float subpixelaa::areaunderdiag(const vec2 &p1, const vec2 &p2, const vec2 &p)
     {
         vec2 d(p2.y - p1.y, p1.x - p2.x);
         float dp = d.dot(vec2(p1).sub(p));
@@ -626,18 +680,12 @@ namespace //internal functions incl. AA implementations
         return 1;
     }
 
-    vec2 areadiag(const vec2 &p1, const vec2 &p2, float left)
+    vec2 subpixelaa::areadiag(const vec2 &p1, const vec2 &p2, float left)
     {
         return vec2(1 - areaunderdiag(p1, p2, vec2(1, 0).add(left)), areaunderdiag(p1, p2, vec2(1, 1).add(left)));
     }
 
-    constexpr int edgesdiag[][2] =
-    {
-        {0, 0}, {1, 0}, {0, 2}, {1, 2}, {2, 0}, {3, 0}, {2, 2}, {3, 2},
-        {0, 1}, {1, 1}, {0, 3}, {1, 3}, {2, 1}, {3, 1}, {2, 3}, {3, 3}
-    };
-
-    vec2 areadiag(float p1x, float p1y, float p2x, float p2y, float d, float left, const vec2 &offset, int pattern)
+    vec2 subpixelaa::areadiag(float p1x, float p1y, float p2x, float p2y, float d, float left, const vec2 &offset, int pattern)
     {
         vec2 p1(p1x, p1y),
              p2(p2x+d, p2y+d);
@@ -652,7 +700,7 @@ namespace //internal functions incl. AA implementations
         return areadiag(p1, p2, left);
     }
 
-    vec2 areadiag2(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y, float p4x, float p4y, float d, float left, const vec2 &offset, int pattern)
+    vec2 subpixelaa::areadiag2(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y, float p4x, float p4y, float d, float left, const vec2 &offset, int pattern)
     {
         vec2 p1(p1x, p1y),
              p2(p2x+d, p2y+d),
@@ -671,7 +719,7 @@ namespace //internal functions incl. AA implementations
         return areadiag(p1, p2, left).avg(areadiag(p3, p4, left));
     }
 
-    vec2 areadiag(int pattern, float left, float right, const vec2 &offset)
+    vec2 subpixelaa::areadiag(int pattern, float left, float right, const vec2 &offset)
     {
         float d = left + right + 1;
         switch(pattern)
@@ -696,17 +744,7 @@ namespace //internal functions incl. AA implementations
         return vec2(0, 0);
     }
 
-    constexpr float offsetsortho[] = { 0.0f, -0.25f, 0.25f, -0.125f, 0.125f, -0.375f, 0.375f };
-    constexpr float offsetsdiag[][2] = {{ 0.0f, 0.0f, }, { 0.25f, -0.25f }, { -0.25f, 0.25f }, { 0.125f, -0.125f }, { -0.125f, 0.125f } };
-
-
-    constexpr int smaaareatexwidth = 160,
-                  smaaareatexheight = 560;
-
-    uchar smaaareadata[smaaareatexwidth*smaaareatexheight*2];
-    bool smaaareadatainited = false;
-
-    void gensmaaareadata()
+    void subpixelaa::gensmaaareadata()
     {
         if(smaaareadatainited)
         {
@@ -756,16 +794,7 @@ namespace //internal functions incl. AA implementations
         smaaareadatainited = true;
     }
 
-    /* smaa vars are set by `setupsmaa()` automatically: if TQAA and/or MSAA are
-     * enabled, the following variables will be set to 1
-     *
-     * generally, do not change these vars from ingame
-     */
-    VAR(smaat2x, 1, 0, 0); //SMAA Temporal 2x (temporal antialiasing)
-    VAR(smaas2x, 1, 0, 0); //SMAA Split 2x (multisample antialiasing)
-    VAR(smaa4x, 1, 0, 0);  //SMAA 4x (both temporal and multisample)
-
-    void setupsmaa(int w, int h)
+    void subpixelaa::setupsmaa(int w, int h)
     {
         if(!smaaareatex)
         {
@@ -842,7 +871,7 @@ namespace //internal functions incl. AA implementations
         loadsmaashaders(split);
     }
 
-    void cleanupsmaa()
+    void subpixelaa::cleanupsmaa()
     {
         if(smaaareatex)
         {
@@ -876,8 +905,7 @@ namespace //internal functions incl. AA implementations
         clearsmaashaders();
     }
 
-    //debug view for smaa buffers
-    void viewsmaa()
+    void subpixelaa::viewsmaa()
     {
         int w = debugfullscreen ? hudw : std::min(hudw, hudh)/2,
             h = debugfullscreen ? hudh : (w*hudh)/hudw,
@@ -927,9 +955,7 @@ namespace //internal functions incl. AA implementations
         debugquad(0, 0, w, h, 0, 0, tw, th);
     }
 
-    //executes the smaa process on the given output framebuffer object (outfbo)
-    //split toggles splitting process into two passes
-    void dosmaa(GLuint outfbo = 0, bool split = false)
+    void subpixelaa::dosmaa(GLuint outfbo, bool split)
     {
         timer *smaatimer = begintimer("smaa");
 
@@ -1093,16 +1119,16 @@ void setupaa(int w, int h)
     }
     if(smaa)
     {
-        if(!smaafbo[0])
+        if(!smaarenderer.smaafbo[0])
         {
-            setupsmaa(w, h);
+            smaarenderer.setupsmaa(w, h);
         }
     }
-    else if(fxaa)
+    else if(fxaa::fxaa)
     {
-        if(!fxaafbo)
+        if(!fxaa::fxaafbo)
         {
-            setupfxaa(w, h);
+            fxaa::setupfxaa(w, h);
         }
     }
 }
@@ -1199,13 +1225,13 @@ void doaa(GLuint outfbo, GBuffer gbuffer)
     if(smaa)
     {
         bool split = multisampledaa();
-        gbuffer.processhdr(smaafbo[0], smaatype);
-        dosmaa(outfbo, split);
+        gbuffer.processhdr(smaarenderer.smaafbo[0], smaarenderer.smaatype);
+        smaarenderer.dosmaa(outfbo, split);
     }
-    else if(fxaa)
+    else if(fxaa::fxaa)
     {
-        gbuffer.processhdr(fxaafbo, fxaatype);
-        dofxaa(outfbo);
+        gbuffer.processhdr(fxaa::fxaafbo, fxaa::fxaatype);
+        fxaa::dofxaa(outfbo);
     }
     else if(tqaa)
     {
@@ -1222,7 +1248,7 @@ bool debugaa()
 {
     if(debugsmaa)
     {
-        viewsmaa();
+        smaarenderer.viewsmaa();
     }
     else if(debugtqaa)
     {
@@ -1237,7 +1263,7 @@ bool debugaa()
 
 void cleanupaa()
 {
-    cleanupsmaa();
-    cleanupfxaa();
+    smaarenderer.cleanupsmaa();
+    fxaa::cleanupfxaa();
     cleanuptqaa();
 }

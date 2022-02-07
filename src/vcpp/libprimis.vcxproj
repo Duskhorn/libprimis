@@ -110,6 +110,7 @@
     <ClInclude Include="..\engine\render\grass.h" />
     <ClInclude Include="..\engine\render\hdr.h" />
     <ClInclude Include="..\engine\render\hud.h" />
+    <ClInclude Include="..\engine\render\imagedata.h" />
     <ClInclude Include="..\engine\render\octarender.h" />
     <ClInclude Include="..\engine\render\radiancehints.h" />
     <ClInclude Include="..\engine\render\renderalpha.h" />
@@ -160,6 +161,7 @@
     <ClCompile Include="..\engine\render\grass.cpp" />
     <ClCompile Include="..\engine\render\hdr.cpp" />
     <ClCompile Include="..\engine\render\hud.cpp" />
+    <ClCompile Include="..\engine\render\imagedata.cpp" />
     <ClCompile Include="..\engine\render\normal.cpp" />
     <ClCompile Include="..\engine\render\octarender.cpp" />
     <ClCompile Include="..\engine\render\radiancehints.cpp" />
@@ -189,7 +191,6 @@
     <ClCompile Include="..\engine\world\raycube.cpp" />
     <ClCompile Include="..\engine\world\world.cpp" />
     <ClCompile Include="..\engine\world\worldio.cpp" />
-    <ClCompile Include="..\shared\crypto.cpp" />
     <ClCompile Include="..\shared\geom.cpp" />
     <ClCompile Include="..\shared\glemu.cpp" />
     <ClCompile Include="..\shared\stream.cpp" />

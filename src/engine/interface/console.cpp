@@ -36,14 +36,15 @@ static inline uint hthash(const FilesKey &k)
 
 namespace
 {
-    constexpr int maxconsolelines = 1000;
+    constexpr int maxconsolelines = 1000;  //maximum length of conlines reverse queue
 
     struct cline
     {
-        char *line;
-        int type, outtime;
+        char *line;   //text contents of the line
+        int type,     //one of the enum values Console_* in headers/consts.h
+            outtime;  //timestamp when the console line was created
     };
-    reversequeue<cline, maxconsolelines> conlines;
+    reversequeue<cline, maxconsolelines> conlines; //global storage of console lines
 
     int commandmillis = -1;
     string commandbuf;
@@ -108,8 +109,8 @@ namespace
     }
     COMMAND(toggleconsole, "");
 
-    VARP(consize, 0, 5, 100);
-    VARP(miniconsize, 0, 5, 100);
+    VARP(consize, 0, 5, 100);                   //font size of the console text
+    VARP(miniconsize, 0, 5, 100);               //miniature console font size
     VARP(miniconwidth, 0, 40, 100);             //miniature console width
     VARP(confade, 0, 30, 60);                   //seconds before fading console
     VARP(miniconfade, 0, 30, 60);
