@@ -1,7 +1,9 @@
 // worldio.cpp: loading & saving of maps and savegames
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glexts.h"
+#include "../../shared/stream.h"
 
 #include "light.h"
 #include "octaedit.h"

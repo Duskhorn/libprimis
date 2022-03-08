@@ -8,6 +8,7 @@
  * will not use hitzone functions.
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -18,6 +19,7 @@
 #include "interface/console.h"
 #include "interface/control.h"
 
+#include "world/entities.h"
 #include "world/octaworld.h"
 #include "world/physics.h"
 #include "world/bih.h"
@@ -29,8 +31,24 @@
 #include "skelmodel.h"
 #include "hitzone.h"
 
+bool htcmp(const skelzonekey &x, const skelhitdata::skelzoneinfo &y)
+{
+    return !memcmp(x.bones, y.key.bones, sizeof(x.bones)) && (x.bones[1] == 0xFF || x.blend == y.key.blend);
+}
+
+uint hthash(const skelzonekey &k)
+{
+    union
+    {
+        uint i[3];
+        uchar b[12];
+    } conv;
+    memcpy(conv.b, k.bones, sizeof(conv.b));
+    return conv.i[0]^conv.i[1]^conv.i[2];
+}
+
 //gets used just twice, in skelbih::triintersect, skelhitzone::triintersect
-inline static bool skeltriintersect(vec a, vec b, vec c, vec o,
+static bool skeltriintersect(vec a, vec b, vec c, vec o,
                                     animmodel::skin* s,
                                     const skelbih::tri t,
                                     const skelmodel::vert va,
@@ -107,12 +125,6 @@ bool skelbih::triintersect(skelmodel::skelmeshgroup *m, skelmodel::skin *s, int 
                           &vc = tm->verts[t.vert[2]];
     return skeltriintersect(va.pos, vb.pos, vc.pos, o, s, t, va, vb, vc, tm, ray);
 }
-
-struct skelbihstack
-{
-    skelbih::node *node;
-    float tmin, tmax;
-};
 
 void skelbih::intersect(skelmodel::skelmeshgroup *m, skelmodel::skin *s, const vec &o, const vec &ray, const vec &invray, node *curnode, float smin, float smax)
 {

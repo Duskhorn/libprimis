@@ -79,7 +79,7 @@ class animmodel : public model
 
             bool checkversion();
 
-            static inline void invalidate()
+            static void invalidate()
             {
                 firstversion = lastversion;
             }
@@ -124,7 +124,7 @@ class animmodel : public model
 
                 virtual ~Mesh()
                 {
-                    DELETEA(name);
+                    delete[] name;
                 }
 
                 virtual void calcbb(vec &bbmin, vec &bbmax, const matrix4x3 &m) {}
@@ -352,7 +352,7 @@ class animmodel : public model
 
                 virtual ~meshgroup()
                 {
-                    DELETEA(name);
+                    delete[] name;
                     meshes.deletecontents();
                     if(next)
                     {
@@ -448,7 +448,7 @@ class animmodel : public model
                 {
                     for(int k = 0; k < maxanimparts; ++k)
                     {
-                        DELETEA(anims[k]);
+                        delete[] anims[k];
                     }
                 }
 
@@ -590,7 +590,6 @@ class animmodel : public model
         static bool enabletc, enablebones, enabletangents;
         static float sizescale;
         static int matrixpos;
-        static matrix4 matrixstack[64];
 
         void startrender();
         static void disablebones();
@@ -605,6 +604,8 @@ class animmodel : public model
         }
         int intersect(int anim, int basetime, int basetime2, const vec &pos, float yaw, float pitch, float roll, dynent *d, modelattach *a, float size, const vec &o, const vec &ray, float &dist, int mode);
 
+        static matrix4 matrixstack[64];
+
     private:
         void intersect(int anim, int basetime, int basetime2, float pitch, const vec &axis, const vec &forward, dynent *d, modelattach *a, const vec &o, const vec &ray);
 
@@ -614,15 +615,8 @@ class animmodel : public model
         static Texture *lasttex, *lastdecal, *lastmasks, *lastnormalmap;
 };
 
-static inline uint hthash(const animmodel::shaderparams &k)
-{
-    return memhash(&k, sizeof(k));
-}
-
-static inline bool htcmp(const animmodel::shaderparams &x, const animmodel::shaderparams &y)
-{
-    return !memcmp(&x, &y, sizeof(animmodel::shaderparams));
-}
+extern uint hthash(const animmodel::shaderparams &k);
+extern bool htcmp(const animmodel::shaderparams &x, const animmodel::shaderparams &y);
 
 /* modelloader
  *
@@ -692,7 +686,7 @@ string modelloader<MDL, BASE>::dir = {'\0'}; // crashes clang if "" is used here
 template<class MDL, class MESH>
 struct modelcommands
 {
-    typedef struct MDL::part part;
+    typedef class MDL::part part;
     typedef struct MDL::skin skin;
 
     static void setdir(char *name)

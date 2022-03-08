@@ -1,8 +1,10 @@
 // shader.cpp: OpenGL GLSL shader management
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
+#include "../../shared/stream.h"
 
 #include "octarender.h"
 #include "rendergl.h"
@@ -109,11 +111,11 @@ static void showglslinfo(GLenum type, GLuint obj, const char *name, const char *
     GLint length = 0;
     if(type)
     {
-        glGetShaderiv_(obj, GL_INFO_LOG_LENGTH, &length);
+        glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &length);
     }
     else
     {
-        glGetProgramiv_(obj, GL_INFO_LOG_LENGTH, &length);
+        glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &length);
     }
     if(length > 1)
     {
@@ -176,18 +178,18 @@ static void compileglslshader(Shader &s, GLenum type, GLuint &obj, const char *d
         "#define shadow2DRectOffset(sampler, coords, offset) textureOffset(sampler, coords, offset)\n";
     parts[numparts++] = modsource ? modsource : source;
     //end glsl 1.4
-    obj = glCreateShader_(type);
-    glShaderSource_(obj, numparts, (const GLchar **)parts, nullptr);
-    glCompileShader_(obj);
+    obj = glCreateShader(type);
+    glShaderSource(obj, numparts, (const GLchar **)parts, nullptr);
+    glCompileShader(obj);
     GLint success;
-    glGetShaderiv_(obj, GL_COMPILE_STATUS, &success);
+    glGetShaderiv(obj, GL_COMPILE_STATUS, &success);
     if(!success)
     {
         if(msg)
         {
             showglslinfo(type, obj, name, parts, numparts);
         }
-        glDeleteShader_(obj);
+        glDeleteShader(obj);
         obj = 0;
     }
     else if(debugshader > 1 && msg)
@@ -204,28 +206,28 @@ VAR(debugubo, 0, 0, 1); //print out to console information about ubos when bindg
 
 static void bindglsluniform(Shader &s, UniformLoc &u)
 {
-    u.loc = glGetUniformLocation_(s.program, u.name);
+    u.loc = glGetUniformLocation(s.program, u.name);
     if(!u.blockname)
     {
         return;
     }
-    GLuint bidx = glGetUniformBlockIndex_(s.program, u.blockname),
+    GLuint bidx = glGetUniformBlockIndex(s.program, u.blockname),
            uidx = GL_INVALID_INDEX;
-    glGetUniformIndices_(s.program, 1, &u.name, &uidx);
+    glGetUniformIndices(s.program, 1, &u.name, &uidx);
     if(bidx != GL_INVALID_INDEX && uidx != GL_INVALID_INDEX)
     {
         GLint sizeval   = 0,
               offsetval = 0,
               strideval = 0;
-        glGetActiveUniformBlockiv_(s.program, bidx, GL_UNIFORM_BLOCK_DATA_SIZE, &sizeval);
+        glGetActiveUniformBlockiv(s.program, bidx, GL_UNIFORM_BLOCK_DATA_SIZE, &sizeval);
         if(sizeval <= 0)
         {
             return;
         }
-        glGetActiveUniformsiv_(s.program, 1, &uidx, GL_UNIFORM_OFFSET, &offsetval);
+        glGetActiveUniformsiv(s.program, 1, &uidx, GL_UNIFORM_OFFSET, &offsetval);
         if(u.stride > 0)
         {
-            glGetActiveUniformsiv_(s.program, 1, &uidx, GL_UNIFORM_ARRAY_STRIDE, &strideval);
+            glGetActiveUniformsiv(s.program, 1, &uidx, GL_UNIFORM_ARRAY_STRIDE, &strideval);
             if(strideval > u.stride)
             {
                 return;
@@ -244,10 +246,10 @@ static void bindglsluniform(Shader &s, UniformLoc &u)
 static void uniformtex(const char * name, int tmu, Shader &s) \
 { \
     do { \
-        int loc = glGetUniformLocation_(s.program, name); \
+        int loc = glGetUniformLocation(s.program, name); \
         if(loc != -1) \
         { \
-            glUniform1i_(loc, tmu); \
+            glUniform1i(loc, tmu); \
         } \
     } while(0);
 }
@@ -264,39 +266,39 @@ static void bindworldtexlocs(Shader &s)
 
 static void linkglslprogram(Shader &s, bool msg = true)
 {
-    s.program = s.vsobj && s.psobj ? glCreateProgram_() : 0;
+    s.program = s.vsobj && s.psobj ? glCreateProgram() : 0;
     GLint success = 0;
     if(s.program)
     {
-        glAttachShader_(s.program, s.vsobj);
-        glAttachShader_(s.program, s.psobj);
+        glAttachShader(s.program, s.vsobj);
+        glAttachShader(s.program, s.psobj);
         uint attribs = 0;
         for(int i = 0; i < s.attriblocs.length(); i++)
         {
             AttribLoc &a = s.attriblocs[i];
-            glBindAttribLocation_(s.program, a.loc, a.name);
+            glBindAttribLocation(s.program, a.loc, a.name);
             attribs |= 1<<a.loc;
         }
         for(int i = 0; i < gle::Attribute_NumAttributes; ++i)
         {
             if(!(attribs&(1<<i)))
             {
-                glBindAttribLocation_(s.program, i, gle::attribnames[i]);
+                glBindAttribLocation(s.program, i, gle::attribnames[i]);
             }
         }
-        glLinkProgram_(s.program);
-        glGetProgramiv_(s.program, GL_LINK_STATUS, &success);
+        glLinkProgram(s.program);
+        glGetProgramiv(s.program, GL_LINK_STATUS, &success);
     }
     if(success)
     {
-        glUseProgram_(s.program);
+        glUseProgram(s.program);
         for(int i = 0; i < 16; ++i)
         {
             static const char * const texnames[16] = { "tex0", "tex1", "tex2", "tex3", "tex4", "tex5", "tex6", "tex7", "tex8", "tex9", "tex10", "tex11", "tex12", "tex13", "tex14", "tex15" };
-            GLint loc = glGetUniformLocation_(s.program, texnames[i]);
+            GLint loc = glGetUniformLocation(s.program, texnames[i]);
             if(loc != -1)
             {
-                glUniform1i_(loc, i);
+                glUniform1i(loc, i);
             }
         }
         if(s.type & Shader_World)
@@ -306,13 +308,13 @@ static void linkglslprogram(Shader &s, bool msg = true)
         for(int i = 0; i < s.defaultparams.length(); i++)
         {
             SlotShaderParamState &param = s.defaultparams[i];
-            param.loc = glGetUniformLocation_(s.program, param.name);
+            param.loc = glGetUniformLocation(s.program, param.name);
         }
         for(int i = 0; i < s.uniformlocs.length(); i++)
         {
             bindglsluniform(s, s.uniformlocs[i]);
         }
-        glUseProgram_(0);
+        glUseProgram(0);
     }
     else if(s.program)
     {
@@ -320,7 +322,7 @@ static void linkglslprogram(Shader &s, bool msg = true)
         {
             showglslinfo(GL_FALSE, s.program, s.name);
         }
-        glDeleteProgram_(s.program);
+        glDeleteProgram(s.program);
         s.program = 0;
     }
 }
@@ -405,7 +407,7 @@ static void setglsluniformformat(Shader &s, const char *name, GLenum format, int
     {
         return;
     }
-    int loc = glGetUniformLocation_(s.program, name);
+    int loc = glGetUniformLocation(s.program, name);
     if(loc < 0)
     {
         return;
@@ -455,7 +457,7 @@ static void setglsluniformformat(Shader &s, const char *name, GLenum format, int
 static void allocglslactiveuniforms(Shader &s)
 {
     GLint numactive = 0;
-    glGetProgramiv_(s.program, GL_ACTIVE_UNIFORMS, &numactive);
+    glGetProgramiv(s.program, GL_ACTIVE_UNIFORMS, &numactive);
     string name;
     for(int i = 0; i < numactive; ++i)
     {
@@ -463,7 +465,7 @@ static void allocglslactiveuniforms(Shader &s)
         GLint size = 0;
         GLenum format = GL_FLOAT_VEC4;
         name[0] = '\0';
-        glGetActiveUniform_(s.program, i, sizeof(name)-1, &namelen, &size, &format, name);
+        glGetActiveUniform(s.program, i, sizeof(name)-1, &namelen, &size, &format, name);
         if(namelen <= 0 || size <= 0)
         {
             continue;
@@ -554,45 +556,45 @@ static void setslotparam(SlotShaderParamState &l, const float *val)
         case GL_BOOL:
         case GL_FLOAT:
         {
-            glUniform1fv_(l.loc, 1, val);
+            glUniform1fv(l.loc, 1, val);
             break;
         }
         case GL_BOOL_VEC2:
         case GL_FLOAT_VEC2:
         {
-            glUniform2fv_(l.loc, 1, val);
+            glUniform2fv(l.loc, 1, val);
             break;
         }
         case GL_BOOL_VEC3:
         case GL_FLOAT_VEC3:
         {
-            glUniform3fv_(l.loc, 1, val);
+            glUniform3fv(l.loc, 1, val);
             break;
         }
         case GL_BOOL_VEC4:
         case GL_FLOAT_VEC4:
         {
-            glUniform4fv_(l.loc, 1, val);
+            glUniform4fv(l.loc, 1, val);
             break;
         }
         case GL_INT:
         {
-            glUniform1i_(l.loc, static_cast<int>(val[0]));
+            glUniform1i(l.loc, static_cast<int>(val[0]));
             break;
         }
         case GL_INT_VEC2:
         {
-            glUniform2i_(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]));
+            glUniform2i(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]));
             break;
         }
         case GL_INT_VEC3:
         {
-            glUniform3i_(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]), static_cast<int>(val[2]));
+            glUniform3i(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]), static_cast<int>(val[2]));
             break;
         }
         case GL_INT_VEC4:
         {
-            glUniform4i_(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]), static_cast<int>(val[2]), static_cast<int>(val[3]));
+            glUniform4i(l.loc, static_cast<int>(val[0]), static_cast<int>(val[1]), static_cast<int>(val[2]), static_cast<int>(val[3]));
             break;
         }
         case GL_UNSIGNED_INT:
@@ -653,11 +655,33 @@ void Shader::setslotparams(Slot &slot)
 
 void Shader::setslotparams(Slot &slot, VSlot &vslot)
 {
+    static bool thrown = false; //only throw error message once (will spam per frame otherwise)
     uint unimask = 0;
     if(vslot.slot == &slot)
     {
         SETSLOTPARAMS(vslot.params)
-        SETSLOTPARAMS(slot.params)
+        for(int i = 0; i < slot.params.length(); i++)
+        {
+            SlotShaderParam &p = slot.params[i];
+            if(!(static_cast<int>(defaultparams.length()) > p.loc))
+            {
+                continue;
+            }
+            SlotShaderParamState &l = defaultparams[p.loc];
+            if(p.loc < 0)
+            {
+                if(!thrown)
+                {
+                    std::printf("Invalid slot shader param index: some slot shaders may not be in use\n");
+                    thrown = true;
+                }
+            }
+            else if(!(unimask&(1<<p.loc)))
+            {
+                unimask |= 1<<p.loc;
+                setslotparam(l, p.val);
+            }
+        }
         SETDEFAULTPARAMS
     }
     else
@@ -680,7 +704,7 @@ void Shader::bindprograms()
     {
         return;
     }
-    glUseProgram_(program);
+    glUseProgram(program);
     lastshader = this;
 }
 
@@ -713,20 +737,20 @@ void Shader::cleanup(bool full)
     {
         if(!reusevs)
         {
-            glDeleteShader_(vsobj); vsobj = 0;
+            glDeleteShader(vsobj); vsobj = 0;
         }
     }
     if(psobj)
     {
         if(!reuseps)
         {
-            glDeleteShader_(psobj);
+            glDeleteShader(psobj);
             psobj = 0;
         }
     }
     if(program)
     {
-        glDeleteProgram_(program);
+        glDeleteProgram(program);
         program = 0;
     }
     localparams.setsize(0);
@@ -735,11 +759,20 @@ void Shader::cleanup(bool full)
     if(standard || full)
     {
         type = Shader_Invalid;
-        DELETEA(vsstr);
-        DELETEA(psstr);
-        DELETEA(defer);
+
+        delete[] vsstr;
+        delete[] psstr;
+        delete[] defer;
+
+        vsstr = nullptr;
+        psstr = nullptr;
+        defer = nullptr;
+
         variants.setsize(0);
-        DELETEA(variantrows);
+
+        delete[] variantrows;
+        variantrows = nullptr;
+
         defaultparams.setsize(0);
         attriblocs.setsize(0);
         fragdatalocs.setsize(0);
@@ -809,7 +842,7 @@ Shader *newshader(int type, const char *name, const char *vs, const char *ps, Sh
 {
     if(Shader::lastshader)
     {
-        glUseProgram_(0);
+        glUseProgram(0);
         Shader::lastshader = nullptr;
     }
     Shader *exists = shaders.access(name);
@@ -818,7 +851,10 @@ Shader *newshader(int type, const char *name, const char *vs, const char *ps, Sh
     s.name = rname;
     s.vsstr = newstring(vs);
     s.psstr = newstring(ps);
-    DELETEA(s.defer);
+
+    delete[] s.defer;
+    s.defer = nullptr;
+
     s.type = type & ~(Shader_Invalid | Shader_Deferred);
     s.variantshader = variant;
     s.standard = standardshaders;
@@ -833,13 +869,15 @@ Shader *newshader(int type, const char *name, const char *vs, const char *ps, Sh
             col = 0;
         if(!vs[0] || std::sscanf(vs, "%d , %d", &row, &col) >= 1)
         {
-            DELETEA(s.vsstr);
+            delete[] s.vsstr;
+            s.vsstr = nullptr;
             s.reusevs = !vs[0] ? variant : variant->getvariant(col, row);
         }
         row = col = 0;
         if(!ps[0] || std::sscanf(ps, "%d , %d", &row, &col) >= 1)
         {
-            DELETEA(s.psstr);
+            delete[] s.psstr;
+            s.psstr = nullptr;
             s.reuseps = !ps[0] ? variant : variant->getvariant(col, row);
         }
     }
@@ -1197,7 +1235,7 @@ void defershader(int *type, const char *name, const char *contents)
     char *rname = exists ? exists->name : newstring(name);
     Shader &s = shaders[rname];
     s.name = rname;
-    DELETEA(s.defer);
+    delete[] s.defer;
     s.defer = newstring(contents);
     s.type = Shader_Deferred | (*type & ~Shader_Invalid);
     s.standard = standardshaders;
@@ -1227,7 +1265,8 @@ void Shader::force()
 
     if(deferred())
     {
-        DELETEA(defer);
+        delete[] defer;
+        defer = nullptr;
         type = Shader_Invalid;
     }
 }
@@ -1598,7 +1637,7 @@ void cleanuppostfx(bool fullclean)
 {
     if(fullclean && postfxfb)
     {
-        glDeleteFramebuffers_(1, &postfxfb);
+        glDeleteFramebuffers(1, &postfxfb);
         postfxfb = 0;
     }
     for(uint i = 0; i < postfxtexs.size(); i++)
@@ -1632,11 +1671,11 @@ GLuint setuppostfx(int w, int h, GLuint outfbo)
     }
     if(!postfxfb)
     {
-        glGenFramebuffers_(1, &postfxfb);
+        glGenFramebuffers(1, &postfxfb);
     }
-    glBindFramebuffer_(GL_FRAMEBUFFER, postfxfb);
+    glBindFramebuffer(GL_FRAMEBUFFER, postfxfb);
     int tex = allocatepostfxtex(0);
-    glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, postfxtexs[tex].id, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, postfxtexs[tex].id, 0);
     gbuf.bindgdepth();
 
     postfxbinds[0] = tex;
@@ -1659,12 +1698,12 @@ void renderpostfx(GLuint outfbo)
         int tex = -1;
         if(!(postfxpasses.size() < i+1))
         {
-            glBindFramebuffer_(GL_FRAMEBUFFER, outfbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, outfbo);
         }
         else
         {
             tex = allocatepostfxtex(p.outputscale);
-            glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, postfxtexs[tex].id, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, postfxtexs[tex].id, 0);
         }
         int w = tex >= 0 ? std::max(postfxw>>postfxtexs[tex].scale, 1) : postfxw,
             h = tex >= 0 ? std::max(postfxh>>postfxtexs[tex].scale, 1) : postfxh;
@@ -1796,7 +1835,7 @@ void cleanupshaders()
     nullshader = hudshader = hudnotextureshader = nullptr;
     ENUMERATE(shaders, Shader, s, s.cleanup());
     Shader::lastshader = nullptr;
-    glUseProgram_(0);
+    glUseProgram(0);
 }
 
 void reloadshaders()

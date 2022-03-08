@@ -13,7 +13,7 @@ class skelbih
 
         ~skelbih()
         {
-            DELETEA(nodes);
+            delete[] nodes;
         }
 
         struct node
@@ -49,6 +49,13 @@ class skelbih
         bool triintersect(skelmodel::skelmeshgroup *m, skelmodel::skin *s, int tidx, const vec &o, const vec &ray);
         void build(skelmodel::skelmeshgroup *m, ushort *indices, int numindices, const vec &vmin, const vec &vmax);
         void intersect(skelmodel::skelmeshgroup *m, skelmodel::skin *s, const vec &o, const vec &ray, const vec &invray, node *curnode, float tmin, float tmax);
+
+        struct skelbihstack
+        {
+            skelbih::node *node;
+            float tmin, tmax;
+        };
+
 };
 
 class skelhitzone
@@ -90,7 +97,7 @@ class skelhitzone
             }
             else
             {
-                DELETEA(tris);
+                delete[] tris;
             }
         }
 
@@ -232,34 +239,6 @@ class skelzonebounds
         vec bbmin, bbmax;
 };
 
-class skelzoneinfo
-{
-    public:
-        int index, parents, conflicts;
-        skelzonekey key;
-        vector<skelzoneinfo *> children;
-        vector<skelhitzone::tri> tris;
-
-        skelzoneinfo() : index(-1), parents(0), conflicts(0) {}
-        skelzoneinfo(const skelzonekey &key) : index(-1), parents(0), conflicts(0), key(key) {}
-};
-
-static inline bool htcmp(const skelzonekey &x, const skelzoneinfo &y)
-{
-    return !memcmp(x.bones, y.key.bones, sizeof(x.bones)) && (x.bones[1] == 0xFF || x.blend == y.key.blend);
-}
-
-static inline uint hthash(const skelzonekey &k)
-{
-    union
-    {
-        uint i[3];
-        uchar b[12];
-    } conv;
-    memcpy(conv.b, k.bones, sizeof(conv.b));
-    return conv.i[0]^conv.i[1]^conv.i[2];
-}
-
 class skelhitdata
 {
     public:
@@ -268,10 +247,10 @@ class skelhitdata
         skelhitdata() : numblends(0), numzones(0), rootzones(0), visited(0), zones(nullptr), links(nullptr), tris(nullptr) {}
         ~skelhitdata()
         {
-            DELETEA(zones);
-            DELETEA(links);
-            DELETEA(tris);
-            DELETEA(blendcache.bdata);
+            delete[] zones;
+            delete[] links;
+            delete[] tris;
+            delete[] blendcache.bdata;
         }
         void build(skelmodel::skelmeshgroup *g, const uchar *ids);
 
@@ -313,6 +292,23 @@ class skelhitdata
         skelhitzone::tri *tris;
 
         uchar chooseid(skelmodel::skelmeshgroup *g, skelmodel::skelmesh *m, const skelmodel::tri &t, const uchar *ids);
+
+        class skelzoneinfo
+        {
+            public:
+                int index, parents, conflicts;
+                skelzonekey key;
+                vector<skelzoneinfo *> children;
+                vector<skelhitzone::tri> tris;
+
+                skelzoneinfo() : index(-1), parents(0), conflicts(0) {}
+                skelzoneinfo(const skelzonekey &key) : index(-1), parents(0), conflicts(0), key(key) {}
+        };
+    //need to set htcmp to friend because it must be in global scope for hashtable macro to find it
+    friend bool htcmp(const skelzonekey &x, const skelhitdata::skelzoneinfo &y);
+
 };
+
+uint hthash(const skelzonekey &k);
 
 #endif

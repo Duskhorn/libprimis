@@ -7,8 +7,10 @@
  *
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
+#include "../../shared/stream.h"
 
 #include "aa.h"
 #include "csm.h"
@@ -23,6 +25,7 @@
 #include "interface/console.h"
 #include "interface/control.h"
 
+#include "world/entities.h"
 #include "world/octaedit.h"
 #include "world/octaworld.h"
 #include "world/physics.h"
@@ -76,19 +79,12 @@ static int addmodeltype(int type, model *(__cdecl *loader)(const char *))
  */
 static vertcommands<obj> objcommands;
 
-//==================================================================== MODELTYPE
-#define MODELTYPE(modeltype, modelclass) \
-    static model *loadmodel_##modelclass(const char *filename) \
-    { \
-        return new modelclass(filename); \
-    } \
-static int dummy_##modelclass = addmodeltype((modeltype), loadmodel_##modelclass);
+// this dummy variable only exists to call addmodeltype() before game's main()
+static int dummy_md5 = addmodeltype((MDL_MD5), +[] (const char *filename) -> model* { return new md5(filename); });
 
-MODELTYPE(MDL_MD5, md5);
-MODELTYPE(MDL_OBJ, obj);
+// this dummy variable only exists to call addmodeltype() before game's main()
+static int dummy_obj = addmodeltype((MDL_OBJ), +[] (const char *filename) -> model* { return new obj(filename); });
 
-#undef MODELTYPE
-//==============================================================================
 static void checkmdl()
 {
     if(!loadingmodel)
@@ -129,7 +125,8 @@ COMMAND(mdlellipsecollide, "i");
 static void mdltricollide(char *collide)
 {
     checkmdl();
-    DELETEA(loadingmodel->collidemodel);
+    delete[] loadingmodel->collidemodel;
+    loadingmodel->collidemodel = nullptr;
     char *end = nullptr;
     int val = strtol(collide, &end, 0);
     if(*end)
@@ -342,10 +339,10 @@ COMMAND(rdeye, "i");
 static void rdtri(int *v1, int *v2, int *v3)
 {
     CHECK_RAGDOLL;
-    ragdollskel::tri *t = new ragdollskel::tri;
-    t->vert[0] = *v1;
-    t->vert[1] = *v2;
-    t->vert[2] = *v3;
+    ragdollskel::tri t;
+    t.vert[0] = *v1;
+    t.vert[1] = *v2;
+    t.vert[2] = *v3;
     ragdoll->tris.emplace_back(t);
 }
 COMMAND(rdtri, "iii");
@@ -826,7 +823,7 @@ static int shadowmaskmodel(const vec &center, float radius)
         }
         case ShadowMap_Cascade:
         {
-            return calcspherecsmsplits(center, radius);
+            return csm.calcspherecsmsplits(center, radius);
         }
         case ShadowMap_Spot:
         {

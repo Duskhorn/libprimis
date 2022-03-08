@@ -8,9 +8,9 @@
  *
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
-
 
 #include "interface/console.h"
 #include "interface/control.h"
@@ -23,6 +23,7 @@
 #include "render/renderparticles.h"
 #include "render/texture.h"
 
+#include "world/entities.h"
 #include "world/physics.h"
 #include "world/bih.h"
 
@@ -74,6 +75,16 @@ matrix4 animmodel::matrixstack[64];
 hashtable<animmodel::shaderparams, animmodel::ShaderParamsKey> animmodel::ShaderParamsKey::keys;
 int animmodel::ShaderParamsKey::firstversion = 0,
     animmodel::ShaderParamsKey::lastversion = 1;
+
+uint hthash(const animmodel::shaderparams &k)
+{
+    return memhash(&k, sizeof(k));
+}
+
+bool htcmp(const animmodel::shaderparams &x, const animmodel::shaderparams &y)
+{
+    return !memcmp(&x, &y, sizeof(animmodel::shaderparams));
+}
 
 // AnimPos
 

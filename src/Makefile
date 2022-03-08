@@ -13,7 +13,6 @@
 CXXFLAGS= -O3 -ffast-math -std=c++17 -march=x86-64 -Wall -fsigned-char -fno-rtti -fpic -D_GLIBCXX_USE_CXX11_ABI=0
 
 	CLIENT_INCLUDES= -Ishared -Iengine $(INCLUDES) -I/usr/X11R6/include `sdl2-config --cflags`
-	CLIENT_LIBS= -L/usr/X11R6/lib -lX11 `sdl2-config --libs` -lSDL2_image -lSDL2_mixer -lSDL2_ttf -lm -lz -lGL -lrt
 
 COVERAGE_BUILD ?= 0
 
@@ -67,6 +66,7 @@ CLIENT_OBJS= \
 	engine/render/water.o \
 	engine/world/bih.o \
 	engine/world/dynlight.o \
+	engine/world/entities.o \
 	engine/world/heightmap.o \
 	engine/world/light.o \
 	engine/world/material.o \

@@ -8,6 +8,7 @@
  */
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -24,7 +25,8 @@ bool EditLine::empty()
 
 void EditLine::clear()
 {
-    DELETEA(text);
+    delete[] text;
+    text = nullptr;
     len = maxlen = 0;
 }
 
@@ -47,7 +49,7 @@ bool EditLine::grow(int total, const char *fmt, ...)
     {
         newtext[0] = '\0';
     }
-    DELETEA(text);
+    delete[] text;
     text = newtext;
     return true;
 }
@@ -241,10 +243,14 @@ void Editor::updateheight()
 
 void Editor::setfile(const char *fname)
 {
-    DELETEA(filename);
+    delete[] filename;
     if(fname)
     {
         filename = newstring(fname);
+    }
+    else
+    {
+        filename = nullptr;
     }
 }
 
@@ -260,9 +266,8 @@ void Editor::load()
     {
         while(lines.add().read(file, maxx) && (maxy < 0 || lines.length() <= maxy))
         {
-            //(empty body)
+            lines.pop().clear();
         }
-        lines.pop().clear();
         delete file;
     }
     if(lines.empty())

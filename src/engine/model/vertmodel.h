@@ -55,9 +55,9 @@ struct vertmodel : animmodel
 
         virtual ~vertmesh()
         {
-            DELETEA(verts);
-            DELETEA(tcverts);
-            DELETEA(tris);
+            delete[] verts;
+            delete[] tcverts;
+            delete[] tris;
         }
 
         void smoothnorms(float limit = 0, bool areaweight = true)
@@ -249,7 +249,10 @@ struct vertmodel : animmodel
         matrix4x3 matrix;
 
         tag() : name(nullptr) {}
-        ~tag() { DELETEA(name); }
+        ~tag()
+        {
+            delete[] name;
+        }
     };
 
     struct vertmeshgroup : meshgroup
@@ -272,19 +275,19 @@ struct vertmodel : animmodel
 
         virtual ~vertmeshgroup()
         {
-            DELETEA(tags);
+            delete[] tags;
             if(ebuf)
             {
-                glDeleteBuffers_(1, &ebuf);
+                glDeleteBuffers(1, &ebuf);
             }
             for(int i = 0; i < maxvbocache; ++i)
             {
                 if(vbocache[i].vbuf)
                 {
-                    glDeleteBuffers_(1, &vbocache[i].vbuf);
+                    glDeleteBuffers(1, &vbocache[i].vbuf);
                 }
             }
-            DELETEA(vdata);
+            delete[] vdata;
         }
 
         int findtag(const char *name)
@@ -377,7 +380,7 @@ struct vertmodel : animmodel
         {
             if(!vc.vbuf)
             {
-                glGenBuffers_(1, &vc.vbuf);
+                glGenBuffers(1, &vc.vbuf);
             }
             if(ebuf)
             {
@@ -391,7 +394,7 @@ struct vertmodel : animmodel
             {
                 vertsize = sizeof(vvert);
                 LOOP_RENDER_MESHES(vertmesh, m, vlen += m.genvbo(idxs, vlen));
-                DELETEA(vdata);
+                delete[] vdata;
                 vdata = new uchar[vlen*vertsize];
                 LOOP_RENDER_MESHES(vertmesh, m,
                 {
@@ -408,7 +411,7 @@ struct vertmodel : animmodel
                     { \
                         vector<type> vverts; \
                         LOOP_RENDER_MESHES(vertmesh, m, vlen += m.genvbo(idxs, vlen, vverts, htdata, htlen)); \
-                        glBufferData_(GL_ARRAY_BUFFER, vverts.length()*sizeof(type), vverts.getbuf(), GL_STATIC_DRAW); \
+                        glBufferData(GL_ARRAY_BUFFER, vverts.length()*sizeof(type), vverts.getbuf(), GL_STATIC_DRAW); \
                     } while(0)
 
                 int numverts = 0,
@@ -426,15 +429,15 @@ struct vertmodel : animmodel
                 memset(htdata, -1, htlen*sizeof(int));
                 GENVBO(vvertg);
                 delete[] htdata;
-
+                htdata = nullptr;
                 #undef GENVBO
 
                 gle::clearvbo();
             }
 
-            glGenBuffers_(1, &ebuf);
+            glGenBuffers(1, &ebuf);
             gle::bindebo(ebuf);
-            glBufferData_(GL_ELEMENT_ARRAY_BUFFER, idxs.length()*sizeof(ushort), idxs.getbuf(), GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxs.length()*sizeof(ushort), idxs.getbuf(), GL_STATIC_DRAW);
             gle::clearebo();
         }
 
@@ -488,14 +491,14 @@ struct vertmodel : animmodel
                 vbocacheentry &c = vbocache[i];
                 if(c.vbuf)
                 {
-                    glDeleteBuffers_(1, &c.vbuf);
+                    glDeleteBuffers(1, &c.vbuf);
                     c.vbuf = 0;
                 }
                 c.as.cur.fr1 = -1;
             }
             if(ebuf)
             {
-                glDeleteBuffers_(1, &ebuf);
+                glDeleteBuffers(1, &ebuf);
                 ebuf = 0;
             }
         }
@@ -569,7 +572,7 @@ struct vertmodel : animmodel
                         m.interpverts(*as, reinterpret_cast<vvert *>(vdata), p->skins[i]);
                     });
                     gle::bindvbo(vc->vbuf);
-                    glBufferData_(GL_ARRAY_BUFFER, vlen*vertsize, vdata, GL_STREAM_DRAW);
+                    glBufferData(GL_ARRAY_BUFFER, vlen*vertsize, vdata, GL_STREAM_DRAW);
                 }
                 vc->millis = lastmillis;
             }

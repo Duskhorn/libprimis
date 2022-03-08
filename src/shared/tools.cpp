@@ -1,14 +1,14 @@
 // implementation of generic tools
 
 #include "../libprimis-headers/cube.h"
+#include "stream.h"
 
 ////////////////////////// strings ////////////////////////////////////////
 
-static string tmpstr[4];
-static int tmpidx = 0;
-
 char *tempformatstring(const char *fmt, ...)
 {
+    static string tmpstr[4];
+    static int tmpidx = 0;
     tmpidx = (tmpidx+1)%4;
 
     va_list v;

@@ -11,8 +11,10 @@
  * locations and radii.
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
+#include "../../shared/stream.h"
 
 #include "light.h"
 #include "octaedit.h"
@@ -473,14 +475,14 @@ bool editmoveplane(const vec &o, const vec &ray, int d, float off, vec &handle, 
 
 namespace hmap
 {
-    bool isheightmap(int o, int d, bool empty, cube *c);
+    bool isheightmap(int o, int d, bool empty, cube &c);
 }
 
 //////////// ready changes to vertex arrays ////////////
 
 static bool haschanged = false;
 
-void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor, int size)
+static void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor, int size)
 {
     LOOP_OCTA_BOX(cor, size, bbmin, bbmax)
     {
@@ -1060,22 +1062,15 @@ bool packundo(undoblock *u, int &inlen, uchar *&outbuf, int &outlen)
     return compresseditinfo(buf.getbuf(), buf.length(), outbuf, outlen);
 }
 
-bool packundo(int op, int &inlen, uchar *&outbuf, int &outlen)
+bool packundo(bool undo, int &inlen, uchar *&outbuf, int &outlen)
 {
-    switch(op)
+    if(undo)
     {
-        case Edit_Undo:
-        {
-            return !undos.empty() && packundo(undos.last, inlen, outbuf, outlen);
-        }
-        case Edit_Redo:
-        {
-            return !redos.empty() && packundo(redos.last, inlen, outbuf, outlen);
-        }
-        default:
-        {
-            return false;
-        }
+        return !undos.empty() && packundo(undos.last, inlen, outbuf, outlen);
+    }
+    else
+    {
+        return !redos.empty() && packundo(redos.last, inlen, outbuf, outlen);
     }
 }
 
@@ -1088,7 +1083,7 @@ struct prefab : editinfo
     prefab() : name(nullptr), ebo(0), vbo(0), numtris(0), numverts(0) {}
     ~prefab()
     {
-        DELETEA(name);
+        delete[] name;
         if(copy)
         {
             freeblock(copy);
@@ -1099,12 +1094,12 @@ struct prefab : editinfo
     {
         if(ebo)
         {
-            glDeleteBuffers_(1, &ebo);
+            glDeleteBuffers(1, &ebo);
             ebo = 0;
         }
         if(vbo)
         {
-            glDeleteBuffers_(1, &vbo);
+            glDeleteBuffers(1, &vbo);
             vbo = 0;
         }
         numtris = numverts = 0;
@@ -1349,19 +1344,19 @@ class prefabmesh
             }
             if(!p.vbo)
             {
-                glGenBuffers_(1, &p.vbo);
+                glGenBuffers(1, &p.vbo);
             }
             gle::bindvbo(p.vbo);
-            glBufferData_(GL_ARRAY_BUFFER, verts.size()*sizeof(vertex), verts.data(), GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(vertex), verts.data(), GL_STATIC_DRAW);
             gle::clearvbo();
             p.numverts = verts.size();
 
             if(!p.ebo)
             {
-                glGenBuffers_(1, &p.ebo);
+                glGenBuffers(1, &p.ebo);
             }
             gle::bindebo(p.ebo);
-            glBufferData_(GL_ELEMENT_ARRAY_BUFFER, tris.size()*sizeof(ushort), tris.data(), GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, tris.size()*sizeof(ushort), tris.data(), GL_STATIC_DRAW);
             gle::clearebo();
             p.numtris = tris.size()/3;
         }

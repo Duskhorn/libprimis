@@ -12,6 +12,7 @@
  */
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -26,6 +27,7 @@
 #include "interface/control.h"
 
 #include "world/bih.h"
+#include "world/entities.h"
 #include "world/octaworld.h"
 #include "world/world.h"
 
@@ -70,14 +72,15 @@ class stainbuffer
 
         ~stainbuffer()
         {
-            DELETEA(verts);
+            delete[] verts;
         }
 
         void init(int tris)
         {
             if(verts)
             {
-                DELETEA(verts);
+                delete[] verts;
+                verts = nullptr;
                 maxverts = startvert = endvert = lastvert = availverts = 0;
             }
             if(tris)
@@ -92,7 +95,7 @@ class stainbuffer
         {
             if(vbo)
             {
-                glDeleteBuffers_(1, &vbo);
+                glDeleteBuffers(1, &vbo);
                 vbo = 0;
             }
         }
@@ -158,18 +161,18 @@ class stainbuffer
             }
             if(!vbo)
             {
-                glGenBuffers_(1, &vbo);
+                glGenBuffers(1, &vbo);
                 dirty = true;
             }
             gle::bindvbo(vbo);
             int count = endvert < startvert ? maxverts - startvert : endvert - startvert;
             if(dirty)
             {
-                glBufferData_(GL_ARRAY_BUFFER, maxverts*sizeof(stainvert), nullptr, GL_STREAM_DRAW);
-                glBufferSubData_(GL_ARRAY_BUFFER, 0, count*sizeof(stainvert), &verts[startvert]);
+                glBufferData(GL_ARRAY_BUFFER, maxverts*sizeof(stainvert), nullptr, GL_STREAM_DRAW);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, count*sizeof(stainvert), &verts[startvert]);
                 if(endvert < startvert)
                 {
-                    glBufferSubData_(GL_ARRAY_BUFFER, count*sizeof(stainvert), endvert*sizeof(stainvert), verts);
+                    glBufferSubData(GL_ARRAY_BUFFER, count*sizeof(stainvert), endvert*sizeof(stainvert), verts);
                     count += endvert;
                 }
                 dirty = false;
@@ -252,7 +255,7 @@ class stainrenderer
 
         ~stainrenderer()
         {
-            DELETEA(stains);
+            delete[] stains;
         }
 
         bool usegbuffer() const
@@ -264,7 +267,7 @@ class stainrenderer
         {
             if(stains)
             {
-                DELETEA(stains);
+                delete[] stains; //do not need to set null, immediately reassigned below
                 maxstains = startstain = endstain = 0;
             }
             stains = new staininfo[tris];

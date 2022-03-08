@@ -10,6 +10,7 @@
  * recommended for large, high detail special effects.
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -789,15 +790,15 @@ struct varenderer : partrenderer
     {
         if(vbo)
         {
-            glDeleteBuffers_(1, &vbo);
+            glDeleteBuffers(1, &vbo);
             vbo = 0;
         }
     }
 
     void init(int n)
     {
-        DELETEA(parts);
-        DELETEA(verts);
+        delete[] parts;
+        delete[] verts;
         parts = new particle[n];
         verts = new partvert[n*4];
         maxparts = n;
@@ -1014,11 +1015,11 @@ struct varenderer : partrenderer
         genverts();
         if(!vbo)
         {
-            glGenBuffers_(1, &vbo);
+            glGenBuffers(1, &vbo);
         }
         gle::bindvbo(vbo);
-        glBufferData_(GL_ARRAY_BUFFER, maxparts*4*sizeof(partvert), nullptr, GL_STREAM_DRAW);
-        glBufferSubData_(GL_ARRAY_BUFFER, 0, numparts*4*sizeof(partvert), verts);
+        glBufferData(GL_ARRAY_BUFFER, maxparts*4*sizeof(partvert), nullptr, GL_STREAM_DRAW);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, numparts*4*sizeof(partvert), verts);
         gle::clearvbo();
     }
 
@@ -1116,30 +1117,32 @@ namespace sphere
         }
         if(!vbuf)
         {
-            glGenBuffers_(1, &vbuf);
+            glGenBuffers(1, &vbuf);
         }
         gle::bindvbo(vbuf);
-        glBufferData_(GL_ARRAY_BUFFER, numverts*sizeof(vert), verts, GL_STATIC_DRAW);
-        DELETEA(verts);
+        glBufferData(GL_ARRAY_BUFFER, numverts*sizeof(vert), verts, GL_STATIC_DRAW);
+        delete[] verts;
+        verts = nullptr;
         if(!ebuf)
         {
-            glGenBuffers_(1, &ebuf);
+            glGenBuffers(1, &ebuf);
         }
         gle::bindebo(ebuf);
-        glBufferData_(GL_ELEMENT_ARRAY_BUFFER, numindices*sizeof(GLushort), indices, GL_STATIC_DRAW);
-        DELETEA(indices);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, numindices*sizeof(GLushort), indices, GL_STATIC_DRAW);
+        delete[] indices;
+        indices = nullptr;
     }
 
     void cleanup()
     {
         if(vbuf)
         {
-            glDeleteBuffers_(1, &vbuf);
+            glDeleteBuffers(1, &vbuf);
             vbuf = 0;
         }
         if(ebuf)
         {
-            glDeleteBuffers_(1, &ebuf);
+            glDeleteBuffers(1, &ebuf);
             ebuf = 0;
         }
     }

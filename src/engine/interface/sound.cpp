@@ -11,6 +11,7 @@
 
 #include "render/rendergl.h" //needed to get camera position
 
+#include "world/entities.h"
 #include "world/world.h"
 
 bool nosound = true;
@@ -21,7 +22,11 @@ struct SoundSample
     Mix_Chunk *chunk;
 
     SoundSample() : name(nullptr), chunk(nullptr) {}
-    ~SoundSample() { DELETEA(name); }
+    ~SoundSample()
+    {
+        delete[] name;
+        name = nullptr;
+    }
 
     void cleanup()
     {
@@ -177,11 +182,13 @@ void stopchannels()
 
 void setmusicvol(int musicvol);
 
-VARFP(soundvol, 0, 255, 255, if(!soundvol)
-{ //don't use sound infrastructure if volume is 0
-    stopchannels();
-    setmusicvol(0);
-});
+VARFP(soundvol, 0, 255, 255,
+    if(!soundvol)
+    { //don't use sound infrastructure if volume is 0
+        stopchannels();
+        setmusicvol(0);
+    }
+);
 
 VARFP(musicvol, 0, 60, 255, setmusicvol(soundvol ? musicvol : 0)); //background music volume
 
@@ -210,8 +217,10 @@ void stopmusic()
     {
         return;
     }
-    DELETEA(musicfile);
-    DELETEA(musicdonecmd);
+    delete[] musicfile;
+    delete[] musicdonecmd;
+    musicfile = musicdonecmd = nullptr;
+
     if(music)
     {
         Mix_HaltMusic();
@@ -352,7 +361,8 @@ void musicdone()
         delete musicstream;
         musicstream = nullptr;
     }
-    DELETEA(musicfile);
+    delete[] musicfile;
+    musicfile = nullptr;
     if(!musicdonecmd)
     {
         return;
@@ -361,6 +371,7 @@ void musicdone()
     musicdonecmd = nullptr;
     execute(cmd);
     delete[] cmd;
+    cmd = nullptr;
 }
 
 //uses Mix_Music object from libSDL
@@ -422,12 +433,17 @@ void startmusic(char *name, char *cmd)
         path(file);
         if(loadmusic(file))
         {
-            DELETEA(musicfile);
-            DELETEA(musicdonecmd);
+            delete[] musicfile;
+            delete[] musicdonecmd;
+
             musicfile = newstring(file);
             if(cmd[0])
             {
                 musicdonecmd = newstring(cmd);
+            }
+            else
+            {
+                musicdonecmd = nullptr;
             }
             Mix_PlayMusic(music, cmd[0] ? 0 : -1);
             Mix_VolumeMusic((musicvol*MIX_MAX_VOLUME)/255);
@@ -1095,8 +1111,10 @@ void resetsound()
     resetchannels();
     if(nosound) //clear stuff if muted
     {
-        DELETEA(musicfile);
-        DELETEA(musicdonecmd);
+        delete[] musicfile;
+        delete[] musicdonecmd;
+
+        musicfile = musicdonecmd = nullptr;
         music = nullptr;
         gamesounds.cleanupsamples();
         mapsounds.cleanupsamples();
@@ -1109,8 +1127,10 @@ void resetsound()
     }
     else
     {
-        DELETEA(musicfile);
-        DELETEA(musicdonecmd);
+        delete[] musicfile;
+        delete[] musicdonecmd;
+
+        musicfile = musicdonecmd = nullptr;
     }
 }
 COMMAND(resetsound, ""); //stop all sounds and re-play background music

@@ -1,4 +1,5 @@
 #include "../libprimis-headers/cube.h"
+#include "stream.h"
 
 #include "../engine/interface/console.h"
 
@@ -47,7 +48,7 @@ struct zipfile
     }
     ~zipfile()
     {
-        DELETEA(name);
+        delete[] name;
     }
 };
 
@@ -66,7 +67,7 @@ struct ziparchive
     }
     ~ziparchive()
     {
-        DELETEA(name);
+        delete[] name;
         if(data)
         {
             fclose(data);
@@ -489,7 +490,8 @@ struct zipstream : stream
     void close()
     {
         stopreading();
-        DELETEA(buf);
+        delete[] buf;
+        buf = nullptr;
         if(arch)
         {
             arch->owner = nullptr;

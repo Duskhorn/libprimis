@@ -79,45 +79,45 @@ struct GlobalShaderParamUse : ShaderParamBinding
             case GL_BOOL:
             case GL_FLOAT:
             {
-                glUniform1fv_(loc, size, param->fval);
+                glUniform1fv(loc, size, param->fval);
                 break;
             }
             case GL_BOOL_VEC2:
             case GL_FLOAT_VEC2:
             {
-                glUniform2fv_(loc, size, param->fval);
+                glUniform2fv(loc, size, param->fval);
                 break;
             }
             case GL_BOOL_VEC3:
             case GL_FLOAT_VEC3:
             {
-                glUniform3fv_(loc, size, param->fval);
+                glUniform3fv(loc, size, param->fval);
                 break;
             }
             case GL_BOOL_VEC4:
             case GL_FLOAT_VEC4:
             {
-                glUniform4fv_(loc, size, param->fval);
+                glUniform4fv(loc, size, param->fval);
                 break;
             }
             case GL_INT:
             {
-                glUniform1iv_(loc, size, param->ival);
+                glUniform1iv(loc, size, param->ival);
                 break;
             }
             case GL_INT_VEC2:
             {
-                glUniform2iv_(loc, size, param->ival);
+                glUniform2iv(loc, size, param->ival);
                 break;
             }
             case GL_INT_VEC3:
             {
-                glUniform3iv_(loc, size, param->ival);
+                glUniform3iv(loc, size, param->ival);
                 break;
             }
             case GL_INT_VEC4:
             {
-                glUniform4iv_(loc, size, param->ival);
+                glUniform4iv(loc, size, param->ival);
                 break;
             }
             case GL_UNSIGNED_INT:
@@ -142,17 +142,17 @@ struct GlobalShaderParamUse : ShaderParamBinding
             }
             case GL_FLOAT_MAT2:
             {
-                glUniformMatrix2fv_(loc, 1, GL_FALSE, param->fval);
+                glUniformMatrix2fv(loc, 1, GL_FALSE, param->fval);
                 break;
             }
             case GL_FLOAT_MAT3:
             {
-                glUniformMatrix3fv_(loc, 1, GL_FALSE, param->fval);
+                glUniformMatrix3fv(loc, 1, GL_FALSE, param->fval);
                 break;
             }
             case GL_FLOAT_MAT4:
             {
-                glUniformMatrix4fv_(loc, 1, GL_FALSE, param->fval);
+                glUniformMatrix4fv(loc, 1, GL_FALSE, param->fval);
                 break;
             }
         }
@@ -251,11 +251,11 @@ struct Shader
 
     ~Shader()
     {
-        DELETEA(name);
-        DELETEA(vsstr);
-        DELETEA(psstr);
-        DELETEA(defer);
-        DELETEA(variantrows);
+        delete[] name;
+        delete[] vsstr;
+        delete[] psstr;
+        delete[] defer;
+        delete[] variantrows;
     }
 
     void allocparams(Slot *slot = nullptr);
@@ -301,14 +301,9 @@ struct Shader
         return (type & Shader_Dynamic) != 0;
     }
 
-    static inline bool isnull(const Shader *s)
-    {
-        return !s;
-    }
-
     bool isnull() const
     {
-        return isnull(this);
+        return (this == nullptr);
     }
 
     int numvariants(int row) const
@@ -594,45 +589,45 @@ struct LocalShaderParam
             case GL_BOOL:
             case GL_FLOAT:
             {
-                glUniform1f_(b->loc, x);
+                glUniform1f(b->loc, x);
                 break;
             }
             case GL_BOOL_VEC2:
             case GL_FLOAT_VEC2:
             {
-                glUniform2f_(b->loc, x, y);
+                glUniform2f(b->loc, x, y);
                 break;
             }
             case GL_BOOL_VEC3:
             case GL_FLOAT_VEC3:
             {
-                glUniform3f_(b->loc, x, y, z);
+                glUniform3f(b->loc, x, y, z);
                 break;
             }
             case GL_BOOL_VEC4:
             case GL_FLOAT_VEC4:
             {
-                glUniform4f_(b->loc, x, y, z, w);
+                glUniform4f(b->loc, x, y, z, w);
                 break;
             }
             case GL_INT:
             {
-                glUniform1i_(b->loc, static_cast<int>(x));
+                glUniform1i(b->loc, static_cast<int>(x));
                 break;
             }
             case GL_INT_VEC2:
             {
-                glUniform2i_(b->loc, static_cast<int>(x), static_cast<int>(y));
+                glUniform2i(b->loc, static_cast<int>(x), static_cast<int>(y));
                 break;
             }
             case GL_INT_VEC3:
             {
-                glUniform3i_(b->loc, static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
+                glUniform3i(b->loc, static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
                 break;
             }
             case GL_INT_VEC4:
             {
-                glUniform4i_(b->loc, static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), static_cast<int>(w));
+                glUniform4i(b->loc, static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), static_cast<int>(w));
                 break;
             }
             case GL_UNSIGNED_INT:
@@ -683,7 +678,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform1fv_(b->loc, n, f);
+            glUniform1fv(b->loc, n, f);
         }
     }
 
@@ -692,7 +687,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform3fv_(b->loc, n, v->v);
+            glUniform3fv(b->loc, n, v->v);
         }
     }
 
@@ -701,7 +696,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform2fv_(b->loc, n, v->v);
+            glUniform2fv(b->loc, n, v->v);
         }
     }
 
@@ -710,7 +705,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform4fv_(b->loc, n, v->v);
+            glUniform4fv(b->loc, n, v->v);
         }
     }
 
@@ -719,7 +714,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform4fv_(b->loc, n, p->v);
+            glUniform4fv(b->loc, n, p->v);
         }
     }
 
@@ -728,7 +723,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniformMatrix2fv_(b->loc, n, GL_FALSE, m->a.v);
+            glUniformMatrix2fv(b->loc, n, GL_FALSE, m->a.v);
         }
     }
 
@@ -737,7 +732,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniformMatrix3fv_(b->loc, n, GL_FALSE, m->a.v);
+            glUniformMatrix3fv(b->loc, n, GL_FALSE, m->a.v);
         }
     }
 
@@ -746,7 +741,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniformMatrix4fv_(b->loc, n, GL_FALSE, m->a.v);
+            glUniformMatrix4fv(b->loc, n, GL_FALSE, m->a.v);
         }
     }
 
@@ -775,46 +770,46 @@ struct LocalShaderParam
             {
                 case GL_FLOAT:
                 {
-                    glUniform1f_(b->loc, x);
+                    glUniform1f(b->loc, x);
                     break;
                 }
                 case GL_FLOAT_VEC2:
                 {
-                    glUniform2f_(b->loc, x, y);
+                    glUniform2f(b->loc, x, y);
                     break;
                 }
                 case GL_FLOAT_VEC3:
                 {
-                    glUniform3f_(b->loc, x, y, z);
+                    glUniform3f(b->loc, x, y, z);
                     break;
                 }
                 case GL_FLOAT_VEC4:
                 {
-                    glUniform4f_(b->loc, x, y, z, w);
+                    glUniform4f(b->loc, x, y, z, w);
                     break;
                 }
                 case GL_BOOL:
                 case GL_INT:
                 {
-                    glUniform1i_(b->loc, x);
+                    glUniform1i(b->loc, x);
                     break;
                 }
                 case GL_BOOL_VEC2:
                 case GL_INT_VEC2:
                 {
-                    glUniform2i_(b->loc, x, y);
+                    glUniform2i(b->loc, x, y);
                     break;
                 }
                 case GL_BOOL_VEC3:
                 case GL_INT_VEC3:
                 {
-                    glUniform3i_(b->loc, x, y, z);
+                    glUniform3i(b->loc, x, y, z);
                     break;
                 }
                 case GL_BOOL_VEC4:
                 case GL_INT_VEC4:
                 {
-                    glUniform4i_(b->loc, x, y, z, w);
+                    glUniform4i(b->loc, x, y, z, w);
                     break;
                 }
                 case GL_UNSIGNED_INT:
@@ -865,7 +860,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform1iv_(b->loc, n, i);
+            glUniform1iv(b->loc, n, i);
         }
     }
     void setv(const ivec *v, int n = 1)
@@ -873,7 +868,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform3iv_(b->loc, n, v->v);
+            glUniform3iv(b->loc, n, v->v);
         }
     }
     void setv(const ivec2 *v, int n = 1)
@@ -881,7 +876,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform2iv_(b->loc, n, v->v);
+            glUniform2iv(b->loc, n, v->v);
         }
     }
     void setv(const vec4<int> *v, int n = 1)
@@ -889,7 +884,7 @@ struct LocalShaderParam
         ShaderParamBinding *b = resolve();
         if(b)
         {
-            glUniform4iv_(b->loc, n, v->v);
+            glUniform4iv(b->loc, n, v->v);
         }
     }
 

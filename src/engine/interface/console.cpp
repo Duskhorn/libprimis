@@ -1,6 +1,7 @@
 // console.cpp: the console buffer, its display, and command line control
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/stream.h"
 
 #include "console.h"
 #include "control.h"
@@ -44,7 +45,7 @@ namespace
         int type,     //one of the enum values Console_* in headers/consts.h
             outtime;  //timestamp when the console line was created
     };
-    reversequeue<cline, maxconsolelines> conlines; //global storage of console lines
+    std::deque<cline> conlines; //global storage of console lines
 
     int commandmillis = -1;
     string commandbuf;
@@ -61,9 +62,10 @@ namespace
 
     VARFP(maxcon, 10, 200, maxconsolelines,
     {
-        while(conlines.length() > maxcon)
+        while(static_cast<int>(conlines.size()) > maxcon)
         {
-            delete[] conlines.pop().line;
+            delete[] conlines.front().line;
+            conlines.pop_back();
         }
     });
 
@@ -74,12 +76,17 @@ namespace
 
     void conline(int type, const char *sf)        // add a line to the console buffer
     {
-        char *buf = conlines.length() >= maxcon ? conlines.remove().line : newstring("", constrlen-1);
-        cline &cl = conlines.add();
+        char *buf = static_cast<int>(conlines.size()) >= maxcon ? conlines.back().line : newstring("", constrlen-1);
+        if(static_cast<int>(conlines.size()) >= maxcon)
+        {
+            conlines.pop_back();
+        }
+        cline cl;
         cl.line = buf;
         cl.type = type;
         cl.outtime = totalmillis;                // for how long to keep line on screen
         copystring(cl.line, sf, constrlen);
+        conlines.push_front(cl);
     }
 
     void fullconsole(int *val, int *numargs, ident *id)
@@ -125,13 +132,13 @@ namespace
     {
         int offsetnum = std::abs(n),
             dir = n < 0 ? -1 : 1;
-        skip = std::clamp(skip, 0, conlines.length()-1);
+        skip = std::clamp(skip, 0, static_cast<int>(conlines.size()-1));
         while(offsetnum)
         {
             skip += dir;
-            if(!conlines.inrange(skip))
+            if(!(static_cast<int>(conlines.size()) > skip))
             {
-                skip = std::clamp(skip, 0, conlines.length()-1);
+                skip = std::clamp(skip, 0, static_cast<int>(conlines.size()-1));
                 return;
             }
             if(conlines[skip].type&filter)
@@ -155,23 +162,24 @@ namespace
 
     void clearconsole()
     {
-        while(conlines.length())
+        while(conlines.size())
         {
-            delete[] conlines.pop().line;
+            delete[] conlines.back().line;
+            conlines.pop_back();
         }
     }
     COMMAND(clearconsole, "");
 
     float drawconlines(int conskip, int confade, float conwidth, float conheight, float conoff, int filter, float y = 0, int dir = 1)
     {
-        int numl = conlines.length(),
+        int numl = conlines.size(),
             offsetlines = std::min(conskip, numl);
         if(confade)
         {
             if(!conskip)
             {
                 numl = 0;
-                for(int i = conlines.length(); --i >=0;) //note reverse iteration
+                for(int i = conlines.size(); --i >=0;) //note reverse iteration
                 {
                     if(totalmillis-conlines[i].outtime < confade*1000)
                     {
@@ -262,10 +270,12 @@ namespace
         }
         ~KeyM()
         {
-            DELETEA(name);
+            delete[] name;
+            name = nullptr;
             for(int i = 0; i < Action_NumActions; ++i)
             {
-                DELETEA(actions[i]);
+                delete[] actions[i];
+                actions[i] = nullptr;
             }
         }
 
@@ -290,7 +300,7 @@ namespace
         }
         KeyM &km = keyms[*code];
         km.code = *code;
-        DELETEA(km.name);
+        delete[] km.name;
         km.name = newstring(key);
     }
     COMMAND(keymap, "is");
@@ -462,8 +472,12 @@ namespace
         textinput(commandmillis >= 0, TextInput_Console);
         keyrepeat(commandmillis >= 0, KeyRepeat_Console);
         copystring(commandbuf, init ? init : "");
-        DELETEA(commandaction);
-        DELETEA(commandprompt);
+
+        delete[] commandaction;
+        delete[] commandprompt;
+        commandaction = nullptr;
+        commandprompt = nullptr;
+
         commandpos = -1;
         if(action && action[0])
         {
@@ -537,9 +551,13 @@ namespace
         HLine() : buf(nullptr), action(nullptr), prompt(nullptr), flags(0) {}
         ~HLine()
         {
-            DELETEA(buf);
-            DELETEA(action);
-            DELETEA(prompt);
+            delete[] buf;
+            delete[] action;
+            delete[] prompt;
+
+            buf = nullptr;
+            action = nullptr;
+            prompt = nullptr;
         }
 
         void restore()
@@ -549,8 +567,13 @@ namespace
             {
                 commandpos = -1;
             }
-            DELETEA(commandaction);
-            DELETEA(commandprompt);
+
+            delete[] commandaction;
+            delete[] commandprompt;
+
+            commandaction = nullptr;
+            commandprompt = nullptr;
+
             if(action)
             {
                 commandaction = newstring(action);
@@ -893,7 +916,15 @@ namespace
             vector<char *> files;
 
             FilesVal(int type, const char *dir, const char *ext) : type(type), dir(newstring(dir)), ext(ext && ext[0] ? newstring(ext) : nullptr), millis(-1) {}
-            ~FilesVal() { DELETEA(dir); DELETEA(ext); files.deletearrays(); }
+            ~FilesVal()
+            {
+                delete[] dir;
+                delete[] ext;
+
+                dir = nullptr;
+                ext = nullptr;
+                files.deletearrays();
+            }
 
             void update()
             {
@@ -1026,7 +1057,8 @@ namespace
         if(!completesize)
         {
             completesize = static_cast<int>(std::strlen(&s[cmdlen]));
-            DELETEA(lastcomplete);
+            delete[] lastcomplete;
+            lastcomplete = nullptr;
         }
         FilesVal *f = nullptr;
         if(completesize)
@@ -1065,7 +1097,9 @@ namespace
                 }
             );
         }
-        DELETEA(lastcomplete);
+
+        delete[] lastcomplete;
+        lastcomplete = nullptr;
         if(nextcomplete)
         {
             cmdlen = std::min(cmdlen, maxlen-1);

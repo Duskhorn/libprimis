@@ -15,6 +15,7 @@
  */
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/stream.h"
 
 #include "console.h"
 #include "control.h"
@@ -228,9 +229,13 @@ void clear_command()
     {
         if(i.type==Id_Alias)
         {
-            DELETEA(i.name);
+            delete[] i.name;
+            i.name = nullptr;
+
             i.forcenull();
-            DELETEA(i.code);
+
+            delete[] i.code;
+            i.code = nullptr;
         }
     });
 }
@@ -771,7 +776,8 @@ struct DefVar : identval
 
     ~DefVar()
     {
-        DELETEA(name);
+        delete[] name;
+        name = nullptr;
         if(onchange)
         {
             freecode(onchange);
@@ -3434,36 +3440,6 @@ static void forcecond(tagval &v)
             {
                 v.setint(0);
             }
-            break;
-        }
-    }
-}
-
-void keepcode(uint *code)
-{
-    if(!code)
-    {
-        return;
-    }
-    switch(*code&Code_OpMask)
-    {
-        case Code_Start:
-        {
-            *code += 0x100;
-            return;
-        }
-    }
-    switch(code[-1]&Code_OpMask)
-    {
-        case Code_Start:
-        {
-            code[-1] += 0x100;
-            break;
-        }
-        case Code_Offset:
-        {
-            code -= static_cast<int>(code[-1]>>8);
-            *code += 0x100;
             break;
         }
     }

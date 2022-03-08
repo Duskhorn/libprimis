@@ -1,6 +1,7 @@
 // renderva.cpp: handles the occlusion and rendering of vertex arrays
 
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -18,6 +19,7 @@
 
 #include "interface/control.h"
 
+#include "world/entities.h"
 #include "world/light.h"
 #include "world/octaedit.h"
 #include "world/octaworld.h"
@@ -212,7 +214,7 @@ namespace
                 {
                     queries[max].owner = nullptr;
                     queries[max].fragments = -1;
-                    glGenQueries_(1, &queries[max++].id);
+                    glGenQueries(1, &queries[max++].id);
                 }
                 cur = defer = 0;
             }
@@ -233,7 +235,7 @@ namespace
                         }
                         return nullptr;
                     }
-                    glGenQueries_(1, &queries[max++].id);
+                    glGenQueries(1, &queries[max++].id);
                 }
                 occludequery *query = &queries[cur++];
                 query->owner = owner;
@@ -253,7 +255,7 @@ namespace
             {
                 for(int i = 0; i < max; ++i)
                 {
-                    glDeleteQueries_(1, &queries[i].id);
+                    glDeleteQueries(1, &queries[i].id);
                     queries[i].owner = nullptr;
                 }
                 cur = max = defer = 0;
@@ -289,19 +291,19 @@ namespace
     {
         if(!bbvbo)
         {
-            glGenBuffers_(1, &bbvbo);
+            glGenBuffers(1, &bbvbo);
             gle::bindvbo(bbvbo);
             vec verts[8];
             for(int i = 0; i < 8; ++i)
             {
                 verts[i] = vec(i&1, (i>>1)&1, (i>>2)&1);
             }
-            glBufferData_(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
             gle::clearvbo();
         }
         if(!bbebo)
         {
-            glGenBuffers_(1, &bbebo);
+            glGenBuffers(1, &bbebo);
             gle::bindebo(bbebo);
             GLushort tris[3*2*6];
             //======================================== GENFACEVERT GENFACEORIENT
@@ -319,7 +321,7 @@ namespace
             #undef GENFACEORIENT
             #undef GENFACEVERT
             //==================================================================
-            glBufferData_(GL_ELEMENT_ARRAY_BUFFER, sizeof(tris), tris, GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(tris), tris, GL_STATIC_DRAW);
             gle::clearebo();
         }
     }
@@ -328,12 +330,12 @@ namespace
     {
         if(bbvbo)
         {
-            glDeleteBuffers_(1, &bbvbo);
+            glDeleteBuffers(1, &bbvbo);
             bbvbo = 0;
         }
         if(bbebo)
         {
-            glDeleteBuffers_(1, &bbebo);
+            glDeleteBuffers(1, &bbebo);
             bbebo = 0;
         }
     }
@@ -566,7 +568,7 @@ namespace
                 bbmin = v.geommin;
                 bbmax = v.geommax;
             }
-            v.shadowmask = calcbbcsmsplits(bbmin, bbmax);
+            v.shadowmask = csm.calcbbcsmsplits(bbmin, bbmax);
             if(v.shadowmask)
             {
                 float dist = shadowdir.project_bb(bbmin, bbmax) - shadowbias;
@@ -1847,8 +1849,8 @@ namespace
         }
 
         GLuint ebuf = 0, vbuf = 0;
-        glGenBuffers_(1, &ebuf);
-        glGenBuffers_(1, &vbuf);
+        glGenBuffers(1, &ebuf);
+        glGenBuffers(1, &vbuf);
         ushort *indexes = new ushort[numindexes];
         int offset = 0;
         for(int i = 0; i < sides; ++i)
@@ -1884,12 +1886,12 @@ namespace
         }
 
         gle::bindebo(ebuf);
-        glBufferData_(GL_ELEMENT_ARRAY_BUFFER, numindexes*sizeof(ushort), indexes, GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, numindexes*sizeof(ushort), indexes, GL_STATIC_DRAW);
         gle::clearebo();
         delete[] indexes;
 
         gle::bindvbo(vbuf);
-        glBufferData_(GL_ARRAY_BUFFER, shadowverts.verts.size()*sizeof(vec), shadowverts.verts.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, shadowverts.verts.size()*sizeof(vec), shadowverts.verts.data(), GL_STATIC_DRAW);
         gle::clearvbo();
         shadowverts.clear();
 
@@ -2321,12 +2323,12 @@ occludequery *newquery(void *owner)
 
 void startquery(occludequery *query)
 {
-    glBeginQuery_(querytarget(), query->id);
+    glBeginQuery(querytarget(), query->id);
 }
 
 void endquery()
 {
-    glEndQuery_(querytarget());
+    glEndQuery(querytarget());
 }
 
 bool checkquery(occludequery *query, bool nowait)
@@ -2336,7 +2338,7 @@ bool checkquery(occludequery *query, bool nowait)
         if(nowait || !oqwait)
         {
             GLint avail;
-            glGetQueryObjectiv_(query->id, GL_QUERY_RESULT_AVAILABLE, &avail);
+            glGetQueryObjectiv(query->id, GL_QUERY_RESULT_AVAILABLE, &avail);
             if(!avail)
             {
                 return false;
@@ -2344,7 +2346,7 @@ bool checkquery(occludequery *query, bool nowait)
         }
 
         GLuint fragments;
-        glGetQueryObjectuiv_(query->id, GL_QUERY_RESULT, &fragments);
+        glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &fragments);
         query->fragments = querytarget() == GL_SAMPLES_PASSED || !fragments ? static_cast<int>(fragments) : oqfrags;
     }
     return query->fragments < oqfrags;
@@ -3111,7 +3113,7 @@ void clearshadowmeshes()
 {
     if(shadowvbos.size())
     {
-        glDeleteBuffers_(shadowvbos.size(), shadowvbos.data());
+        glDeleteBuffers(shadowvbos.size(), shadowvbos.data());
         shadowvbos.clear();
     }
     if(shadowmeshes.numelems)
@@ -3485,7 +3487,7 @@ void findshadowmms()
                 }
                 case ShadowMap_Cascade:
                 {
-                    if(!calcbbcsmsplits(oe->bbmin, oe->bbmax))
+                    if(!csm.calcbbcsmsplits(oe->bbmin, oe->bbmax))
                     {
                         continue;
                     }

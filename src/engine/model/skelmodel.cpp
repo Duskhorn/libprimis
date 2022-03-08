@@ -10,6 +10,7 @@
  * for the class definition
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
@@ -23,6 +24,7 @@
 #include "render/rendermodel.h"
 #include "render/texture.h"
 
+#include "world/entities.h"
 #include "world/octaworld.h"
 #include "world/physics.h"
 #include "world/bih.h"
@@ -770,7 +772,8 @@ void skelmodel::skeleton::cleanup(bool full)
         {
             sc.as[j].cur.fr1 = -1;
         }
-        DELETEA(sc.bdata);
+        delete[] sc.bdata;
+        sc.bdata = nullptr;
     }
     skelcache.setsize(0);
     blendoffsets.clear();
@@ -866,7 +869,7 @@ int skelmodel::skeleton::getblendoffset(UniformLoc &u)
     if(offset < 0)
     {
         DEF_FORMAT_STRING(offsetname, "%s[%d]", u.name, 2*numgpubones);
-        offset = glGetUniformLocation_(Shader::lastshader->program, offsetname);
+        offset = glGetUniformLocation(Shader::lastshader->program, offsetname);
     }
     return offset;
 }
@@ -877,13 +880,13 @@ void skelmodel::skeleton::setglslbones(UniformLoc &u, skelcacheentry &sc, skelca
     {
         return;
     }
-    glUniform4fv_(u.loc, 2*numgpubones, sc.bdata[0].real.v);
+    glUniform4fv(u.loc, 2*numgpubones, sc.bdata[0].real.v);
     if(count > 0)
     {
         int offset = getblendoffset(u);
         if(offset >= 0)
         {
-            glUniform4fv_(offset, 2*count, bc.bdata[0].real.v);
+            glUniform4fv(offset, 2*count, bc.bdata[0].real.v);
         }
     }
     u.version = bc.version;
@@ -913,7 +916,7 @@ void skelmodel::skelmeshgroup::genvbo(vbocacheentry &vc)
 {
     if(!vc.vbuf)
     {
-        glGenBuffers_(1, &vc.vbuf);
+        glGenBuffers(1, &vc.vbuf);
     }
     if(ebuf)
     {
@@ -935,7 +938,7 @@ void skelmodel::skelmeshgroup::genvbo(vbocacheentry &vc)
 
         vertsize = sizeof(vvert);
         LOOP_RENDER_MESHES(skelmesh, m, vlen += m.genvbo(idxs, vlen));
-        DELETEA(vdata);
+        delete[] vdata;
         vdata = new uchar[vlen*vertsize];
         LOOP_RENDER_MESHES(skelmesh, m,
         {
@@ -975,7 +978,7 @@ void skelmodel::skelmeshgroup::genvbo(vbocacheentry &vc)
                 vertsize = sizeof(type); \
                 std::vector<type> vverts; \
                 LOOP_RENDER_MESHES(skelmesh, m, vlen += m.genvbo args); \
-                glBufferData_(GL_ARRAY_BUFFER, vverts.size()*sizeof(type), vverts.data(), GL_STATIC_DRAW); \
+                glBufferData(GL_ARRAY_BUFFER, vverts.size()*sizeof(type), vverts.data(), GL_STATIC_DRAW); \
             } while(0)
         /* need these macros so it's possible to pass a variadic chain of
          * args in a single package
@@ -1014,9 +1017,9 @@ void skelmodel::skelmeshgroup::genvbo(vbocacheentry &vc)
         gle::clearvbo();
     }
 
-    glGenBuffers_(1, &ebuf);
+    glGenBuffers(1, &ebuf);
     gle::bindebo(ebuf);
-    glBufferData_(GL_ELEMENT_ARRAY_BUFFER, idxs.size()*sizeof(ushort), idxs.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxs.size()*sizeof(ushort), idxs.data(), GL_STATIC_DRAW);
     gle::clearebo();
 }
 
@@ -1078,7 +1081,7 @@ void skelmodel::skelmeshgroup::render(const AnimState *as, float pitch, const ve
                 m.interpverts(sc.bdata, bc ? bc->bdata : nullptr, reinterpret_cast<vvert *>(vdata), p->skins[i]);
             });
             gle::bindvbo(vc.vbuf);
-            glBufferData_(GL_ARRAY_BUFFER, vlen*vertsize, vdata, GL_STREAM_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, vlen*vertsize, vdata, GL_STREAM_DRAW);
         }
 
         bindvbo(as, p, vc, &sc, bc);
@@ -1509,7 +1512,8 @@ void skelmodel::skelmeshgroup::cleanup()
     for(int i = 0; i < maxblendcache; ++i)
     {
         blendcacheentry &c = blendcache[i];
-        DELETEA(c.bdata);
+        delete[] c.bdata;
+        c.bdata = nullptr;
         c.owner = -1;
     }
     for(int i = 0; i < maxvbocache; ++i)
@@ -1517,14 +1521,14 @@ void skelmodel::skelmeshgroup::cleanup()
         vbocacheentry &c = vbocache[i];
         if(c.vbuf)
         {
-            glDeleteBuffers_(1, &c.vbuf);
+            glDeleteBuffers(1, &c.vbuf);
             c.vbuf = 0;
         }
         c.owner = -1;
     }
     if(ebuf)
     {
-        glDeleteBuffers_(1, &ebuf);
+        glDeleteBuffers(1, &ebuf);
         ebuf = 0;
     }
     if(skel)
@@ -1595,7 +1599,7 @@ skelmodel::animpartmask *skelmodel::skelpart::newpartmask()
 
 void skelmodel::skelpart::initanimparts()
 {
-    DELETEA(buildingpartmask);
+    delete[] buildingpartmask;
     buildingpartmask = newpartmask();
 }
 

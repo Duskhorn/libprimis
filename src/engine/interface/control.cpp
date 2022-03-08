@@ -5,6 +5,7 @@
  * timestate information, and engine version information
  */
 #include "../libprimis-headers/cube.h"
+#include "../../shared/stream.h"
 
 #include "console.h"
 #include "control.h"
@@ -152,7 +153,7 @@ int getclockmillis()
 //identification info about engine
 std::string enginestr()
 {
-    return "Libprimis v0.14a";
+    return "Libprimis v0.15a";
 }
 
 std::string enginebuilddate()
