@@ -1,4 +1,5 @@
 var searchData=
 [
-  ['reversequeue_0',['reversequeue',['../structreversequeue.html',1,'']]]
+  ['tagval_0',['tagval',['../structtagval.html',1,'']]],
+  ['tex_1',['Tex',['../structSlot_1_1Tex.html',1,'Slot']]]
 ];
