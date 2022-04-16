@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['size_0',['size',['../structundoblock.html#a0fb516658877a3ab5933b04708332a3b',1,'undoblock::size()'],['../structhashbase.html#a600b191339f6da94d03bd9d69bcd9baf',1,'hashbase::size()']]],
-  ['spotlights_1',['spotlights',['../iengine_8h.html#a91ed2134b80d69e9d3145a5fe0081346',1,'iengine.h']]]
+  ['o_0',['o',['../structentity.html#a525c90c5512cbb504f7ac9ab7014336f',1,'entity::o()'],['../structselinfo.html#ae8353821d8834bf1fd29564adadc742d',1,'selinfo::o()']]],
+  ['orient_1',['orient',['../structselinfo.html#a25ac5bf8a2bb25a9f96317d8badf2ce7',1,'selinfo']]]
 ];
