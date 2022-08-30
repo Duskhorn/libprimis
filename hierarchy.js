@@ -7,25 +7,24 @@ var hierarchy =
     [ "hashbase< H, E, K, T >::chain", "structhashbase_1_1chain.html", null ],
     [ "hashbase< H, E, K, T >::chainchunk", "structhashbase_1_1chainchunk.html", null ],
     [ "cube", "classcube.html", null ],
-    [ "cubeworld", "structcubeworld.html", null ],
+    [ "cubeworld", "classcubeworld.html", null ],
     [ "databuf< T >", "structdatabuf.html", null ],
     [ "editinfo", "structeditinfo.html", null ],
     [ "entity", "structentity.html", [
       [ "extentity", "structextentity.html", null ]
     ] ],
-    [ "facebounds", "structfacebounds.html", null ],
     [ "GenericVec2< T >", "structGenericVec2.html", null ],
     [ "GenericVec3< T >", "structGenericVec3.html", null ],
-    [ "hashbase< H, E, K, T >", "structhashbase.html", null ],
+    [ "hashbase< H, E, K, T >", "structhashbase.html", [
+      [ "hashtable< cube::cfkey, cube::cfpolys >", "structhashtable.html", null ]
+    ] ],
     [ "hashbase< hashnameset< T >, T, const char *, T >", "structhashbase.html", [
       [ "hashnameset< T >", "structhashnameset.html", null ]
     ] ],
     [ "hashbase< hashset< T >, T, T, T >", "structhashbase.html", [
       [ "hashset< T >", "structhashset.html", null ]
     ] ],
-    [ "hashbase< hashtable< cube::cfkey, cube::cfpolys >, hashtableentry< cube::cfkey, cube::cfpolys >, cube::cfkey, cube::cfpolys >", "structhashbase.html", [
-      [ "hashtable< cube::cfkey, cube::cfpolys >", "structhashtable.html", null ]
-    ] ],
+    [ "hashbase< hashtable< cube::cfkey, cube::cfpolys >, hashtableentry< cube::cfkey, cube::cfpolys >, cube::cfkey, cube::cfpolys >", "structhashbase.html", null ],
     [ "hashbase< hashtable< K, T >, hashtableentry< K, T >, K, T >", "structhashbase.html", [
       [ "hashtable< K, T >", "structhashtable.html", null ]
     ] ],
@@ -63,12 +62,8 @@ var hierarchy =
     [ "vec2", "structvec2.html", null ],
     [ "vec4< T >", "structvec4.html", null ],
     [ "vec4< float >", "structvec4.html", null ],
-    [ "vector< T >", "structvector.html", null ],
-    [ "vector< Slot::Tex >", "structvector.html", null ],
-    [ "vector< SlotShaderParam >", "structvector.html", null ],
     [ "VSlot", "structVSlot.html", [
       [ "DecalSlot", "structDecalSlot.html", null ]
     ] ],
-    [ "vslotmap", "structvslotmap.html", null ],
-    [ "vslotref", "structvslotref.html", null ]
+    [ "vslotmap", "structvslotmap.html", null ]
 ];
