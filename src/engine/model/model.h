@@ -61,19 +61,19 @@ class model
                                        const std::optional<vec> orient,
                                        const std::optional<float> size)
         {
-            if(pos)
+            if(pos.has_value())
             {
                 translate = pos.value();
             }
-            if(rotate)
+            if(rotate.has_value())
             {
                 spin = rotate.value();
             }
-            if(orient)
+            if(orient.has_value())
             {
                 orientation = orient.value();
             }
-            if(size)
+            if(size.has_value())
             {
                 scale = size.value();
             }

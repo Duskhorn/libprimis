@@ -551,14 +551,14 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         }
         part &mdl = *static_cast<part *>(MDL::loading->parts.back());
         std::optional<int> i = mdl.meshes ? static_cast<meshgroup *>(mdl.meshes)->skel->findbone(name) : std::nullopt;
-        if(i)
+        if(i.has_value())
         {
             float cx = *rx ? std::cos(*rx/(2*RAD)) : 1, sx = *rx ? std::sin(*rx/(2*RAD)) : 0,
                   cy = *ry ? std::cos(*ry/(2*RAD)) : 1, sy = *ry ? std::sin(*ry/(2*RAD)) : 0,
                   cz = *rz ? std::cos(*rz/(2*RAD)) : 1, sz = *rz ? std::sin(*rz/(2*RAD)) : 0;
             matrix4x3 m(matrix3(quat(sx*cy*cz - cx*sy*sz, cx*sy*cz + sx*cy*sz, cx*cy*sz - sx*sy*cz, cx*cy*cz + sx*sy*sz)),
                         vec(*tx, *ty, *tz));
-            static_cast<meshgroup *>(mdl.meshes)->skel->addtag(tagname, *i, m);
+            static_cast<meshgroup *>(mdl.meshes)->skel->addtag(tagname, i.value(), m);
             return;
         }
         conoutf("could not find bone %s for tag %s", name, tagname);
@@ -579,9 +579,9 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         if(name[0])
         {
             std::optional<int> i = mdl.meshes ? static_cast<meshgroup *>(mdl.meshes)->skel->findbone(name) : std::nullopt;
-            if(i)
+            if(i.has_value())
             {
-                boneinfo &b = static_cast<meshgroup *>(mdl.meshes)->skel->bones[*i];
+                boneinfo &b = static_cast<meshgroup *>(mdl.meshes)->skel->bones[i.value()];
                 b.pitchscale = *pitchscale;
                 b.pitchoffset = *pitchoffset;
                 if(*pitchmin || *pitchmax)
@@ -636,20 +636,20 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         }
         skeleton *skel = static_cast<meshgroup *>(mdl.meshes)->skel;
         std::optional<int> bone = skel ? skel->findbone(name) : std::nullopt;
-        if(!bone)
+        if(!bone.has_value())
         {
             conoutf("could not find bone %s to pitch target", name);
             return;
         }
         for(uint i = 0; i < skel->pitchtargets.size(); i++)
         {
-            if(skel->pitchtargets[i].bone == *bone)
+            if(skel->pitchtargets[i].bone == bone.value())
             {
                 return;
             }
         }
         pitchtarget t;
-        t.bone = *bone;
+        t.bone = bone.value();
         t.frame = sa->frame + std::clamp(*frameoffset, 0, sa->range-1);
         t.pitchmin = *pitchmin;
         t.pitchmax = *pitchmax;
@@ -671,38 +671,38 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         }
         skeleton *skel = static_cast<meshgroup *>(mdl.meshes)->skel;
         std::optional<int> bone = skel ? skel->findbone(name) : std::nullopt;
-        if(!bone)
+        if(!bone.has_value())
         {
             conoutf("could not find bone %s to pitch correct", name);
             return;
         }
-        if(skel->findpitchcorrect(*bone) >= 0)
+        if(skel->findpitchcorrect(bone.value()) >= 0)
         {
             return;
         }
         std::optional<int> targetbone = skel->findbone(targetname),
                            target = std::nullopt;
-        if(targetbone)
+        if(targetbone.has_value())
         {
             for(uint i = 0; i < skel->pitchtargets.size(); i++)
             {
-                if(skel->pitchtargets[i].bone == *targetbone)
+                if(skel->pitchtargets[i].bone == targetbone.value())
                 {
-                    target = i;
+                    target = targetbone;
                     break;
                 }
             }
         }
-        if(!target)
+        if(!target.has_value())
         {
             conoutf("could not find pitch target %s to pitch correct %s", targetname, name);
             return;
         }
-        pitchcorrect c(*bone, *target, *pitchmin, *pitchmax, *scale);
+        pitchcorrect c(bone.value(), target.value(), *pitchmin, *pitchmax, *scale);
         uint pos = skel->pitchcorrects.size();
         for(uint i = 0; i < skel->pitchcorrects.size(); i++)
         {
-            if(bone <= skel->pitchcorrects[i].bone)
+            if(bone.value() <= skel->pitchcorrects[i].bone)
             {
                 pos = i;
                 break;
@@ -785,7 +785,7 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         {
             char *bonestr = bonestrs[i];
             std::optional<int> bone = p->meshes ? static_cast<meshgroup *>(p->meshes)->skel->findbone(bonestr[0]=='!' ? bonestr+1 : bonestr) : std::nullopt;
-            if(!bone)
+            if(!bone.has_value())
             {
                 conoutf("could not find bone %s for anim part mask [%s]", bonestr, maskstr);
                 for(char* j : bonestrs)
@@ -794,7 +794,7 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
                 }
                 return;
             }
-            bonemask.push_back(*bone | (bonestr[0]=='!' ? Bonemask_Not : 0));
+            bonemask.push_back(bone.value() | (bonestr[0]=='!' ? Bonemask_Not : 0));
         }
         for(char* i : bonestrs)
         {
@@ -825,16 +825,16 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
             return;
         }
         std::optional<int> i = mdl.meshes ? static_cast<meshgroup *>(mdl.meshes)->skel->findbone(name) : std::nullopt;
-        if(!i)
+        if(!i.has_value())
         {
             conoutf("could not find bone %s to adjust", name);
             return;
         }
-        while(!(static_cast<int>(MDL::adjustments.size()) > *i))
+        while(!(static_cast<int>(MDL::adjustments.size()) > i.value()))
         {
             MDL::adjustments.push_back(skeladjustment(0, 0, 0, vec(0, 0, 0)));
         }
-        MDL::adjustments[*i] = skeladjustment(*yaw, *pitch, *roll, vec(*tx/4, *ty/4, *tz/4));
+        MDL::adjustments[i.value()] = skeladjustment(*yaw, *pitch, *roll, vec(*tx/4, *ty/4, *tz/4));
     }
 
     static void sethitzone(const int *id, const char *maskstr)
@@ -862,7 +862,7 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
         {
             char *bonestr = bonestrs[i];
             std::optional<int> bone = p->meshes ? static_cast<meshgroup *>(p->meshes)->skel->findbone(bonestr[0]=='!' ? bonestr+1 : bonestr) : std::nullopt;
-            if(!bone)
+            if(!bone.has_value())
             {
                 conoutf("could not find bone %s for hit zone mask [%s]", bonestr, maskstr);
                 for(char* j : bonestrs)
@@ -871,7 +871,7 @@ struct skelcommands : modelcommands<MDL, struct MDL::skelmesh>
                 }
                 return;
             }
-            bonemask.push_back(*bone | (bonestr[0]=='!' ? Bonemask_Not : 0));
+            bonemask.push_back(bone.value() | (bonestr[0]=='!' ? Bonemask_Not : 0));
         }
         for(char* i : bonestrs)
         {
