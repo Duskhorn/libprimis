@@ -1,3 +1,9 @@
+/**
+ * @brief GL immediate mode EMUlation layer (glemu).
+ *
+ * This file replicates some of the functionality of the long since removed glBegin/glEnd
+ * features from extremely outdated versions of OpenGL.
+ */
 #include "../libprimis-headers/cube.h"
 
 #include "glemu.h"
@@ -23,7 +29,7 @@ namespace gle
     ucharbuf attribbuf;
     static uchar *attribdata;
     static attribinfo attribdefs[Attribute_NumAttributes], lastattribs[Attribute_NumAttributes];
-    int enabled = 0;
+    static int enabled = 0;
     static int numattribs = 0,
                attribmask = 0,
                numlastattribs = 0,
@@ -92,10 +98,10 @@ namespace gle
             }
             count = maxquads - offset;
         }
-        glDrawRangeElements_(GL_TRIANGLES, offset*4, (offset + count)*4-1, count*6, GL_UNSIGNED_SHORT, (ushort *)0 + offset*6);
+        glDrawRangeElements(GL_TRIANGLES, offset*4, (offset + count)*4-1, count*6, GL_UNSIGNED_SHORT, (ushort *)0 + offset*6);
     }
 
-    void defattrib(int type, int size, int format)
+    static void defattrib(int type, int size, int format)
     {
         if(type == Attribute_Vertex)
         {
@@ -273,7 +279,7 @@ namespace gle
         {
             glBindBuffer(GL_ARRAY_BUFFER, vbo);
         }
-        void *buf = glMapBufferRange_(GL_ARRAY_BUFFER, vbooffset, len, GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_RANGE_BIT|GL_MAP_UNSYNCHRONIZED_BIT);
+        void *buf = glMapBufferRange(GL_ARRAY_BUFFER, vbooffset, len, GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_RANGE_BIT|GL_MAP_UNSYNCHRONIZED_BIT);
         if(buf)
         {
             attribbuf.reset(static_cast<uchar *>(buf), len);
@@ -321,8 +327,8 @@ namespace gle
                 glBindBuffer(GL_ARRAY_BUFFER, vbo);
             }
             //void pointer warning!
-            void *dst = glMapBufferRange_(GL_ARRAY_BUFFER, vbooffset, attribbuf.length(), GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_RANGE_BIT|GL_MAP_UNSYNCHRONIZED_BIT);
-            memcpy(dst, attribbuf.getbuf(), attribbuf.length());
+            void *dst = glMapBufferRange(GL_ARRAY_BUFFER, vbooffset, attribbuf.length(), GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_RANGE_BIT|GL_MAP_UNSYNCHRONIZED_BIT);
+            std::memcpy(dst, attribbuf.getbuf(), attribbuf.length());
             glUnmapBuffer(GL_ARRAY_BUFFER);
         }
         else
@@ -333,52 +339,35 @@ namespace gle
         if(vertexsize == lastvertexsize && buf >= lastbuf)
         {
             start = static_cast<int>(buf - lastbuf)/vertexsize;
-            if(primtype == GL_QUADS && (start%4 || start + attribbuf.length()/vertexsize >= 4*maxquads))
-            {
-                start = 0;
-            }
-            else
-            {
-                buf = lastbuf;
-            }
+            buf = lastbuf;
         }
         vbooffset += attribbuf.length();
         setattribs(buf);
         int numvertexes = attribbuf.length()/vertexsize;
-        if(primtype == GL_QUADS)
+        if(multidrawstart.size())
         {
-            if(!quadsenabled)
+            multidraw();
+            if(start)
             {
-                enablequads();
+                //offset the buffer indices by start point
+                for(GLint &i : multidrawstart)
+                {
+                    i += start;
+                }
             }
-            drawquads(start/4, numvertexes/4);
+            glMultiDrawArrays(primtype, multidrawstart.data(), multidrawcount.data(), multidrawstart.size());
+            multidrawstart.clear();
+            multidrawcount.clear();
         }
         else
         {
-            if(multidrawstart.size())
-            {
-                multidraw();
-                if(start)
-                {
-                    for(uint i = 0; i < multidrawstart.size(); i++)
-                    {
-                        multidrawstart[i] += start;
-                    }
-                }
-                glMultiDrawArrays(primtype, multidrawstart.data(), multidrawcount.data(), multidrawstart.size());
-                multidrawstart.resize(0);
-                multidrawcount.resize(0);
-            }
-            else
-            {
-                glDrawArrays(primtype, start, numvertexes);
-            }
+            glDrawArrays(primtype, start, numvertexes);
         }
         attribbuf.reset(attribdata, maxvbosize);
         return numvertexes;
     }
 
-    void forcedisable()
+    static void forcedisable()
     {
         for(int i = 0; enabled; i++)
         {
@@ -397,13 +386,21 @@ namespace gle
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
+    void disable()
+    {
+        if(enabled)
+        {
+            forcedisable();
+        }
+    }
+
     void setup()
     {
         if(!defaultvao)
         {
-            glGenVertexArrays_(1, &defaultvao);
+            glGenVertexArrays(1, &defaultvao);
         }
-        glBindVertexArray_(defaultvao);
+        glBindVertexArray(defaultvao);
         attribdata = new uchar[maxvbosize];
         attribbuf.reset(attribdata, maxvbosize);
     }
@@ -424,51 +421,187 @@ namespace gle
         vbooffset = maxvbosize;
         if(defaultvao)
         {
-            glDeleteVertexArrays_(1, &defaultvao);
+            glDeleteVertexArrays(1, &defaultvao);
             defaultvao = 0;
         }
     }
 
-    void defvertex(int size, int format) { defattrib(Attribute_Vertex, size, format); }
-    void defcolor(int size, int format) { defattrib(Attribute_Color, size, format); }
-    void deftexcoord0(int size, int format) { defattrib(Attribute_TexCoord0, size, format); }
-    void defnormal(int size, int format) { defattrib(Attribute_Normal, size, format); }
+    void defvertex(int size, int format)
+    {
+        defattrib(Attribute_Vertex, size, format);
+    }
 
-    void colorf(float x, float y, float z) { glVertexAttrib3f(Attribute_Color, x, y, z); }
-    void colorf(float x, float y, float z, float w) { glVertexAttrib4f(Attribute_Color, x, y, z, w); }
+    void defcolor(int size, int format)
+    {
+        defattrib(Attribute_Color, size, format);
+    }
 
-    void color(const vec &v) { glVertexAttrib3fv(Attribute_Color, v.v); }
-    void color(const vec &v, float w) { glVertexAttrib4f(Attribute_Color, v.x, v.y, v.z, w); }
+    void deftexcoord0(int size, int format)
+    {
+        defattrib(Attribute_TexCoord0, size, format);
+    }
 
-    void colorub(uchar x, uchar y, uchar z, uchar w) { glVertexAttrib4Nub(Attribute_Color, x, y, z, w); }
-    void color(const bvec &v, uchar alpha) { glVertexAttrib4Nub(Attribute_Color, v.x, v.y, v.z, alpha); }
+    void defnormal(int size, int format)
+    {
+        defattrib(Attribute_Normal, size, format);
+    }
 
-    void enablevertex() { disable(); glEnableVertexAttribArray(Attribute_Vertex); }
-    void disablevertex() { glDisableVertexAttribArray(Attribute_Vertex); }
-    void vertexpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { disable(); glVertexAttribPointer(Attribute_Vertex, size, type, normalized, stride, data); }
-    void enablecolor() { ; glEnableVertexAttribArray(Attribute_Color); }
-    void disablecolor() { glDisableVertexAttribArray(Attribute_Color); }
-    void colorpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_Color, size, type, normalized, stride, data); }
-    void enabletexcoord0() { ; glEnableVertexAttribArray(Attribute_TexCoord0); }
-    void disabletexcoord0() { glDisableVertexAttribArray(Attribute_TexCoord0); }
-    void texcoord0pointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_TexCoord0, size, type, normalized, stride, data); }
-    void enablenormal() { ; glEnableVertexAttribArray(Attribute_Normal); }
-    void disablenormal() { glDisableVertexAttribArray(Attribute_Normal); }
-    void normalpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_Normal, size, type, normalized, stride, data); }
-    void enabletangent() { ; glEnableVertexAttribArray(Attribute_Tangent); }
-    void disabletangent() { glDisableVertexAttribArray(Attribute_Tangent); }
-    void tangentpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_Tangent, size, type, normalized, stride, data); }
-    void enableboneweight() { ; glEnableVertexAttribArray(Attribute_BoneWeight); }
-    void disableboneweight() { glDisableVertexAttribArray(Attribute_BoneWeight); }
-    void boneweightpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_BoneWeight, size, type, normalized, stride, data); }
-    void enableboneindex() { ; glEnableVertexAttribArray(Attribute_BoneIndex); }
-    void disableboneindex() { glDisableVertexAttribArray(Attribute_BoneIndex); }
-    void boneindexpointer(int stride, const void *data, GLenum type, int size, GLenum normalized) { ; glVertexAttribPointer(Attribute_BoneIndex, size, type, normalized, stride, data); }
+    void colorf(float x, float y, float z, float w)
+    {
+        if(w != 0.0f)
+        {
+            glVertexAttrib4f(Attribute_Color, x, y, z, w);
+        }
+        else
+        {
+            glVertexAttrib3f(Attribute_Color, x, y, z);
+        }
+    }
 
-    void bindebo(GLuint ebo) { disable(); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo); }
-    void clearebo() { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); }
-    void bindvbo(GLuint vbo) { disable(); glBindBuffer(GL_ARRAY_BUFFER, vbo); }
-    void clearvbo() { glBindBuffer(GL_ARRAY_BUFFER, 0); }
+    void color(const vec &v)
+    {
+        glVertexAttrib3fv(Attribute_Color, v.v);
+    }
+
+    void color(const vec &v, float w)
+    {
+        glVertexAttrib4f(Attribute_Color, v.x, v.y, v.z, w);
+    }
+
+    void colorub(uchar x, uchar y, uchar z, uchar w)
+    {
+        glVertexAttrib4Nub(Attribute_Color, x, y, z, w);
+    }
+
+    void color(const bvec &v, uchar alpha)
+    {
+        glVertexAttrib4Nub(Attribute_Color, v.x, v.y, v.z, alpha);
+    }
+
+    void enablevertex()
+    {
+        disable();
+        glEnableVertexAttribArray(Attribute_Vertex);
+    }
+
+    void disablevertex()
+    {
+        glDisableVertexAttribArray(Attribute_Vertex);
+    }
+    void vertexpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        disable();
+        glVertexAttribPointer(Attribute_Vertex, size, type, normalized, stride, data);
+    }
+    void enablecolor()
+    {
+        glEnableVertexAttribArray(Attribute_Color);
+    }
+    void disablecolor()
+    {
+        glDisableVertexAttribArray(Attribute_Color);
+    }
+    void colorpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_Color, size, type, normalized, stride, data);
+    }
+
+    void enabletexcoord0()
+    {
+        glEnableVertexAttribArray(Attribute_TexCoord0);
+    }
+
+    void disabletexcoord0()
+    {
+        glDisableVertexAttribArray(Attribute_TexCoord0);
+    }
+
+    void texcoord0pointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_TexCoord0, size, type, normalized, stride, data);
+    }
+
+    void enablenormal()
+    {
+        glEnableVertexAttribArray(Attribute_Normal);
+    }
+
+    void disablenormal()
+    {
+        glDisableVertexAttribArray(Attribute_Normal);
+    }
+
+    void normalpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_Normal, size, type, normalized, stride, data);
+    }
+
+    void enabletangent()
+    {
+        glEnableVertexAttribArray(Attribute_Tangent);
+    }
+
+    void disabletangent()
+    {
+        glDisableVertexAttribArray(Attribute_Tangent);
+    }
+
+    void tangentpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_Tangent, size, type, normalized, stride, data);
+    }
+
+    void enableboneweight()
+    {
+        glEnableVertexAttribArray(Attribute_BoneWeight);
+    }
+
+    void disableboneweight()
+    {
+        glDisableVertexAttribArray(Attribute_BoneWeight);
+    }
+
+    void boneweightpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_BoneWeight, size, type, normalized, stride, data);
+    }
+
+    void enableboneindex()
+    {
+        glEnableVertexAttribArray(Attribute_BoneIndex);
+    }
+
+    void disableboneindex()
+    {
+        glDisableVertexAttribArray(Attribute_BoneIndex);
+    }
+
+    void boneindexpointer(int stride, const void *data, GLenum type, int size, GLenum normalized)
+    {
+        glVertexAttribPointer(Attribute_BoneIndex, size, type, normalized, stride, data);
+    }
+
+    void bindebo(GLuint ebo)
+    {
+        disable();
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    }
+
+    void clearebo()
+    {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+
+    void bindvbo(GLuint vbo)
+    {
+        disable();
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    }
+
+    void clearvbo()
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 
     template<class T>
     void attrib(T x, T y)
@@ -506,13 +639,34 @@ namespace gle
         }
     }
 
-    void attribf(float x, float y) { attrib<float>(x, y); }
-    void attribf(float x, float y, float z) { attrib<float>(x, y, z); }
+    void attribf(float x, float y)
+    {
+        attrib<float>(x, y);
+    }
 
-    void attribub(uchar x, uchar y, uchar z, uchar w) { attrib<uchar>(x, y, z, w); }
+    void attribf(float x, float y, float z)
+    {
+        attrib<float>(x, y, z);
+    }
 
-    void attrib(const vec &v) { attrib<float>(v.x, v.y, v.z); }
-    void attrib(const vec &v, float w) { attrib<float>(v.x, v.y, v.z, w); }
-    void attrib(const vec2 &v) { attrib<float>(v.x, v.y); }
+    void attribub(uchar x, uchar y, uchar z, uchar w)
+    {
+        attrib<uchar>(x, y, z, w);
+    }
+
+    void attrib(const vec &v)
+    {
+        attrib<float>(v.x, v.y, v.z);
+    }
+
+    void attrib(const vec &v, float w)
+    {
+        attrib<float>(v.x, v.y, v.z, w);
+    }
+
+    void attrib(const vec2 &v)
+    {
+        attrib<float>(v.x, v.y);
+    }
 }
 

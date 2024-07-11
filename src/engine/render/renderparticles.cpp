@@ -20,6 +20,9 @@
 #include "renderva.h"
 #include "renderwindow.h"
 #include "rendertext.h"
+#include "renderttf.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "stain.h"
 #include "texture.h"
 #include "water.h"
@@ -47,8 +50,8 @@ VARP(softparticleblend, 1, 8, 64); //inverse of blend factor for soft particle b
 // Check canemitparticles() to limit the rate that paricles can be emitted for models/sparklies
 // Automatically stops particles being emitted when paused or in reflective drawing
 VARP(emitmillis, 1, 17, 1000); //note: 17 ms = ~60fps
-static int lastemitframe = 0,
-           emitoffset    = 0;
+
+static int emitoffset     = 0;
 static bool canemit       = false,
             regenemitters = false,
             canstep       = false;
@@ -62,19 +65,19 @@ std::vector<std::string> entnames;
 VARP(showparticles,  0, 1, 1);                  //toggles showing billboarded particles
 VAR(cullparticles,   0, 1, 1);                  //toggles culling particles beyond fog distance
 VAR(replayparticles, 0, 1, 1);                  //toggles re-rendering previously generated particles
-VARN(seedparticles, seedmillis, 0, 3000, 10000);//sets the time between seeding particles
+static int seedmillis = variable("seedparticles", 0, 3000, 10000, &seedmillis, nullptr, 0);//sets the time between seeding particles
 VAR(debugparticlecull, 0, 0, 1);                //print out console information about particles culled
 VAR(debugparticleseed, 0, 0, 1);                //print out radius/maxfade info for particles upon spawn
 
 class particleemitter
 {
     public:
-        extentity *ent;
+        const extentity *ent;
         vec center;
         float radius;
         int maxfade, lastemit, lastcull;
 
-        particleemitter(extentity *ent)
+        particleemitter(const extentity *ent)
             : ent(ent), maxfade(-1), lastemit(0), lastcull(0), bbmin(ent->o), bbmax(ent->o)
         {}
 
@@ -82,8 +85,6 @@ class particleemitter
         {
             center = vec(bbmin).add(bbmax).mul(0.5f);
             radius = bbmin.dist(bbmax)/2;
-            cullmin = ivec::floor(bbmin);
-            cullmax = ivec::ceil(bbmax);
             if(debugparticleseed)
             {
                 conoutf(Console_Debug, "radius: %f, maxfade: %d", radius, maxfade);
@@ -107,7 +108,6 @@ class particleemitter
         }
     private:
         vec bbmin, bbmax;
-        ivec cullmin, cullmax;
 };
 
 static std::vector<particleemitter> emitters;
@@ -116,13 +116,6 @@ static particleemitter *seedemitter = nullptr;
 const char * getentname(int i)
 {
     return i>=0 && static_cast<size_t>(i) < entnames.size() ? entnames[i].c_str() : "";
-}
-
-char * entname(entity &e)
-{
-    static string fullentname;
-    copystring(fullentname, getentname(e.type));
-    return fullentname;
 }
 
 void clearparticleemitters()
@@ -134,20 +127,19 @@ void clearparticleemitters()
 void addparticleemitters()
 {
     emitters.clear();
-    const vector<extentity *> &ents = entities::getents();
-    for(int i = 0; i < ents.length(); i++)
+    const std::vector<extentity *> &ents = entities::getents();
+    for(const extentity *e : ents)
     {
-        extentity &e = *ents[i];
-        if(e.type != EngineEnt_Particles)
+        if(e->type != EngineEnt_Particles)
         {
             continue;
         }
-        emitters.emplace_back(particleemitter(&e));
+        emitters.emplace_back(particleemitter(e));
     }
     regenemitters = false;
 }
 //particle types
-enum
+enum ParticleTypes
 {
     PT_PART = 0,
     PT_TAPE,
@@ -159,7 +151,7 @@ enum
     PT_FIREBALL,
 };
 //particle properties
-enum
+enum ParticleProperties
 {
     PT_MOD       = 1<<8,
     PT_RND4      = 1<<9,
@@ -214,16 +206,12 @@ static constexpr float collideerror  = 1.0f;
 class partrenderer
 {
     public:
-        uint type;
-        int stain;
-        string info;
-
         partrenderer(const char *texname, int texclamp, int type, int stain = -1)
-            : type(type), stain(stain), tex(nullptr), texname(texname), texclamp(texclamp)
+            : tex(nullptr), type(type), stain(stain), texname(texname), texclamp(texclamp)
         {
         }
         partrenderer(int type, int stain = -1)
-            : type(type), stain(stain), tex(nullptr), texname(nullptr), texclamp(0)
+            : tex(nullptr), type(type), stain(stain), texname(nullptr), texclamp(0)
         {
         }
         virtual ~partrenderer()
@@ -232,12 +220,12 @@ class partrenderer
 
         virtual void init(int n) { }
         virtual void reset() = 0;
-        virtual void resettracked(physent *owner) { }
+        virtual void resettracked(const physent *owner) { }
         virtual particle *addpart(const vec &o, const vec &d, int fade, int color, float size, int gravity = 0) = 0;
         virtual void update() { }
         virtual void render() = 0;
-        virtual bool haswork() = 0;
-        virtual int count() = 0; //for debug
+        virtual bool haswork() const = 0;
+        virtual int count() const = 0; //for debug
         virtual void cleanup() {}
 
         virtual void seedemitter(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int gravity)
@@ -253,7 +241,7 @@ class partrenderer
         }
 
         //blend = 0 => remove it
-        void calc(particle *p, int &blend, int &ts, vec &o, vec &d, bool step = true)
+        void calc(particle *p, int &blend, int &ts, vec &o, vec &d, bool step = true) const
         {
             o = p->o;
             d = p->d;
@@ -273,8 +261,9 @@ class partrenderer
                         ts = p->fade;
                     }
                     float t = ts;
-                    o.add(vec(d).mul(t/5000.0f));
-                    o.z -= t*t/(2.0f * 5000.0f * p->gravity);
+                    constexpr float tfactor = 5000.f;
+                    o.add(vec(d).mul(t/tfactor));
+                    o.z -= t*t/(2.0f * tfactor * p->gravity);
                 }
                 if(type&PT_COLLIDE && o.z < p->val && step)
                 {
@@ -303,8 +292,9 @@ class partrenderer
         }
 
         //prints out info for a particle, with its letter denoting particle type
-        void debuginfo()
+        void debuginfo() const
         {
+            string info;
             formatstring(info, "%d\t%s(", count(), partnames[type&0xFF].c_str());
             if(type&PT_LERP)    concatstring(info, "l,");
             if(type&PT_MOD)     concatstring(info, "m,");
@@ -323,9 +313,21 @@ class partrenderer
                 }
             }
         }
+
+        bool hasstain() const
+        {
+            return stain >= 0;
+        }
+
+        uint parttype() const
+        {
+            return type;
+        }
     protected:
-        Texture *tex;
+        const Texture *tex;
     private:
+        uint type;
+        int stain;
         const char *texname;
         int texclamp;
 
@@ -361,9 +363,9 @@ class listrenderer : public partrenderer
 
         virtual void startrender() = 0;
         virtual void endrender() = 0;
-        virtual void renderpart(listparticle *p, const vec &o, const vec &d, int blend, int ts) = 0;
+        virtual void renderpart(const listparticle &p, const vec &o, const vec &d, int blend, int ts) = 0;
 
-        bool haswork()
+        bool haswork() const override final
         {
             return (list != nullptr);
         }
@@ -377,11 +379,11 @@ class listrenderer : public partrenderer
             {
                 return false;
             }
-            renderpart(p, o, d, blend, ts);
+            renderpart(*p, o, d, blend, ts);
             return p->fade > 5;
         }
 
-        void render()
+        void render() override final
         {
             startrender();
             if(tex)
@@ -414,7 +416,7 @@ class listrenderer : public partrenderer
             }
             endrender();
         }
-        void reset()
+        void reset() override final
         {
             if(!list)
             {
@@ -438,9 +440,9 @@ class listrenderer : public partrenderer
             list = nullptr;
         }
 
-        void resettracked(physent *owner)
+        void resettracked(const physent *owner) override final
         {
-            if(!(type&PT_TRACK))
+            if(!(parttype()&PT_TRACK))
             {
                 return;
             }
@@ -459,7 +461,7 @@ class listrenderer : public partrenderer
             }
         }
 
-        particle *addpart(const vec &o, const vec &d, int fade, int color, float size, int gravity)
+        particle *addpart(const vec &o, const vec &d, int fade, int color, float size, int gravity) override final
         {
             if(!parempty)
             {
@@ -487,10 +489,10 @@ class listrenderer : public partrenderer
             return p;
         }
 
-        int count()
+        int count() const override final
         {
             int num = 0;
-            listparticle *lp;
+            const listparticle *lp;
             for(lp = list; lp; lp = lp->next)
             {
                 num++;
@@ -503,7 +505,7 @@ class listrenderer : public partrenderer
 
 listparticle *listrenderer::parempty = nullptr;
 
-class meterrenderer : public listrenderer
+class meterrenderer final : public listrenderer
 {
     public:
         meterrenderer(int type)
@@ -511,24 +513,24 @@ class meterrenderer : public listrenderer
         {
         }
     private:
-        void startrender()
+        void startrender() override final
         {
             glDisable(GL_BLEND);
             gle::defvertex();
         }
 
-        void endrender()
+        void endrender() override final
         {
             glEnable(GL_BLEND);
         }
 
-        void renderpart(listparticle *p, const vec &o, const vec &d, int blend, int ts)
+        void renderpart(const listparticle &p, const vec &o, const vec &d, int blend, int ts) override final
         {
-            int basetype = type&0xFF;
-            float scale  = FONTH*p->size/80.0f,
+            int basetype = parttype()&0xFF;
+            float scale  = FONTH*p.size/80.0f,
                   right  = 8,
-                  left   = p->progress/100.0f*right;
-            matrix4x3 m(camright, vec(camup).neg(), vec(camdir).neg(), o);
+                  left   = p.progress/100.0f*right;
+            matrix4x3 m(camright(), camup().neg(), camdir().neg(), o);
             m.scale(scale);
             m.translate(-right/2.0f, 0, 0);
 
@@ -548,7 +550,7 @@ class meterrenderer : public listrenderer
             }
             if(basetype==PT_METERVS)
             {
-                gle::colorub(p->color2[0], p->color2[1], p->color2[2]);
+                gle::colorub(p.color2[0], p.color2[1], p.color2[2]);
             }
             else
             {
@@ -579,7 +581,7 @@ class meterrenderer : public listrenderer
                 gle::end();
             }
 
-            gle::color(p->color);
+            gle::color(p.color);
             gle::begin(GL_TRIANGLE_STRIP);
             for(int k = 0; k < 10; ++k)
             {
@@ -594,59 +596,6 @@ class meterrenderer : public listrenderer
 };
 static meterrenderer meters(PT_METER), metervs(PT_METERVS);
 
-struct textrenderer : listrenderer
-{
-    textrenderer(int type = 0)
-        : listrenderer(type|PT_TEXT|PT_LERP|PT_SHADER|PT_NOLAYER)
-    {
-    }
-
-    void startrender()
-    {
-        textshader = particletextshader;
-
-        pushfont();
-        setfont("default_outline");
-    }
-
-    void endrender()
-    {
-        textshader = nullptr;
-
-        popfont();
-    }
-
-    void killpart(listparticle *p)
-    {
-        if(p->text && p->flags&1)
-        {
-            delete[] p->text;
-        }
-    }
-
-    void renderpart(listparticle *p, const vec &o, const vec &d, int blend, int ts)
-    {
-        float scale = p->size/80.0f,
-              xoff = -text_width(p->text)/2,
-              yoff = 0;
-        if((type&0xFF)==PT_TEXTUP)
-        {
-            //this is an UGLY cast from a pointer to an unsigned int
-            xoff += detrnd(reinterpret_cast<size_t>(p), 100)-50;
-            yoff -= detrnd(reinterpret_cast<size_t>(p), 101);
-        }
-
-        matrix4x3 m(camright, vec(camup).neg(), vec(camdir).neg(), o);
-        m.scale(scale);
-        m.translate(xoff, yoff, 50);
-
-        textmatrix = &m;
-        draw_text(p->text, 0, 0, p->color.r, p->color.g, p->color.b, blend);
-        textmatrix = nullptr;
-    }
-};
-static textrenderer texts;
-
 template<int T>
 static void modifyblend(const vec &o, int &blend)
 {
@@ -656,8 +605,8 @@ static void modifyblend(const vec &o, int &blend)
 template<int T>
 static void genpos(const vec &o, const vec &d, float size, int grav, int ts, partvert *vs)
 {
-    vec udir = vec(camup).sub(camright).mul(size),
-        vdir = vec(camup).add(camright).mul(size);
+    vec udir = camup().sub(camright()).mul(size),
+        vdir = camup().add(camright()).mul(size);
     vs[0].pos = vec(o.x + udir.x, o.y + udir.y, o.z + udir.z);
     vs[1].pos = vec(o.x + vdir.x, o.y + vdir.y, o.z + vdir.z);
     vs[2].pos = vec(o.x - udir.x, o.y - udir.y, o.z - udir.z);
@@ -708,32 +657,33 @@ static const vec2 rotcoeffs[32][4] =
     ROTCOEFFS(16), ROTCOEFFS(17), ROTCOEFFS(18), ROTCOEFFS(19), ROTCOEFFS(20), ROTCOEFFS(21), ROTCOEFFS(22), ROTCOEFFS(7),
     ROTCOEFFS(24), ROTCOEFFS(25), ROTCOEFFS(26), ROTCOEFFS(27), ROTCOEFFS(28), ROTCOEFFS(29), ROTCOEFFS(30), ROTCOEFFS(31),
 };
+#undef ROTCOEFFS
+//==============================================================================
 
 template<>
 void genrotpos<PT_PART>(const vec &o, const vec &d, float size, int grav, int ts, partvert *vs, int rot)
 {
     const vec2 *coeffs = rotcoeffs[rot];
-    vs[0].pos = vec(o).madd(camright, coeffs[0].x*size).madd(camup, coeffs[0].y*size);
-    vs[1].pos = vec(o).madd(camright, coeffs[1].x*size).madd(camup, coeffs[1].y*size);
-    vs[2].pos = vec(o).madd(camright, coeffs[2].x*size).madd(camup, coeffs[2].y*size);
-    vs[3].pos = vec(o).madd(camright, coeffs[3].x*size).madd(camup, coeffs[3].y*size);
+    vs[0].pos = vec(o).madd(camright(), coeffs[0].x*size).madd(camup(), coeffs[0].y*size);
+    vs[1].pos = vec(o).madd(camright(), coeffs[1].x*size).madd(camup(), coeffs[1].y*size);
+    vs[2].pos = vec(o).madd(camright(), coeffs[2].x*size).madd(camup(), coeffs[2].y*size);
+    vs[3].pos = vec(o).madd(camright(), coeffs[3].x*size).madd(camup(), coeffs[3].y*size);
 }
 
-#undef ROTCOEFFS
-//==============================================================================
 template<int T>
 void seedpos(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int grav)
 {
+    constexpr float scale = 5000.f;
     if(grav)
     {
         float t = fade;
-        vec end = vec(o).madd(d, t/5000.0f);
-        end.z -= t*t/(2.0f * 5000.0f * grav);
+        vec end = vec(o).madd(d, t/scale);
+        end.z -= t*t/(2.0f * scale * grav);
         pe.extendbb(end, size);
         float tpeak = d.z*grav;
         if(tpeak > 0 && tpeak < fade)
         {
-            pe.extendbb(o.z + 1.5f*d.z*tpeak/5000.0f, size);
+            pe.extendbb(o.z + 1.5f*d.z*tpeak/scale, size);
         }
     }
 }
@@ -756,8 +706,18 @@ void seedpos<PT_TRAIL>(particleemitter &pe, const vec &o, const vec &d, int fade
     pe.extendbb(e, size);
 }
 
+//only used by template<> varenderer, but cannot be declared in a template in c++17
+static void setcolor(float r, float g, float b, float a, partvert * vs)
+{
+    vec4<uchar> col(r, g, b, a);
+    for(int i = 0; i < 4; ++i)
+    {
+        vs[i].color = col;
+    }
+};
+
 template<int T>
-struct varenderer : partrenderer
+struct varenderer final : partrenderer
 {
     partvert *verts;
     particle *parts;
@@ -786,7 +746,7 @@ struct varenderer : partrenderer
         }
     }
 
-    void cleanup()
+    void cleanup() override final
     {
         if(vbo)
         {
@@ -795,7 +755,7 @@ struct varenderer : partrenderer
         }
     }
 
-    void init(int n)
+    void init(int n) override final
     {
         delete[] parts;
         delete[] verts;
@@ -806,15 +766,15 @@ struct varenderer : partrenderer
         lastupdate = -1;
     }
 
-    void reset()
+    void reset() override final
     {
         numparts = 0;
         lastupdate = -1;
     }
 
-    void resettracked(physent *owner)
+    void resettracked(const physent *owner) override final
     {
-        if(!(type&PT_TRACK))
+        if(!(parttype()&PT_TRACK))
         {
             return;
         }
@@ -829,17 +789,17 @@ struct varenderer : partrenderer
         lastupdate = -1;
     }
 
-    int count()
+    int count() const override final
     {
         return numparts;
     }
 
-    bool haswork()
+    bool haswork() const override final
     {
         return (numparts > 0);
     }
 
-    particle *addpart(const vec &o, const vec &d, int fade, int color, float size, int gravity)
+    particle *addpart(const vec &o, const vec &d, int fade, int color, float size, int gravity) override final
     {
         particle *p = parts + (numparts < maxparts ? numparts++ : randomint(maxparts)); //next free slot, or kill a random kitten
         p->o = o;
@@ -855,7 +815,7 @@ struct varenderer : partrenderer
         return p;
     }
 
-    void seedemitter(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int gravity)
+    void seedemitter(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int gravity) override final
     {
         pe.maxfade = std::max(pe.maxfade, fade);
         size *= SQRT2;
@@ -891,77 +851,68 @@ struct varenderer : partrenderer
         if(regen)
         {
             p->flags &= ~0x80;
+
+            auto swaptexcoords = [&] (float u1, float u2, float v1, float v2)
+            {
+                if(p->flags&0x01)
+                {
+                    std::swap(u1, u2);
+                }
+                if(p->flags&0x02)
+                {
+                    std::swap(v1, v2);
+                }
+            };
+
             //sets the partvert vs array's tc fields to four permutations of input parameters
-            //===================================================== SETTEXCOORDS
-            #define SETTEXCOORDS(u1c, u2c, v1c, v2c, body) \
-            { \
-                float u1 = u1c, \
-                      u2 = u2c, \
-                      v1 = v1c, \
-                      v2 = v2c; \
-                body; \
-                vs[0].tc = vec2(u1, v1); \
-                vs[1].tc = vec2(u2, v1); \
-                vs[2].tc = vec2(u2, v2); \
-                vs[3].tc = vec2(u1, v2); \
-            }
-            if(type&PT_RND4)
+            auto settexcoords = [vs, swaptexcoords] (float u1c, float u2c, float v1c, float v2c, bool swap)
+            {
+                float u1 = u1c,
+                      u2 = u2c,
+                      v1 = v1c,
+                      v2 = v2c;
+                if(swap)
+                {
+                    swaptexcoords(u1, u2, v1, v2);
+                }
+                vs[0].tc = vec2(u1, v1);
+                vs[1].tc = vec2(u2, v1);
+                vs[2].tc = vec2(u2, v2);
+                vs[3].tc = vec2(u1, v2);
+            };
+
+            if(parttype()&PT_RND4)
             {
                 float tx = 0.5f*((p->flags>>5)&1),
                       ty = 0.5f*((p->flags>>6)&1);
-                SETTEXCOORDS(tx, tx + 0.5f, ty, ty + 0.5f,
-                {
-                    if(p->flags&0x01)
-                    {
-                        std::swap(u1, u2);
-                    }
-                    if(p->flags&0x02)
-                    {
-                        std::swap(v1, v2);
-                    }
-                });
+                settexcoords(tx, tx + 0.5f, ty, ty + 0.5f, true);
             }
-            else if(type&PT_ICON)
+            else if(parttype()&PT_ICON)
             {
                 float tx = 0.25f*(p->flags&3),
                       ty = 0.25f*((p->flags>>2)&3);
-                SETTEXCOORDS(tx, tx + 0.25f, ty, ty + 0.25f, {});
+                settexcoords(tx, tx + 0.25f, ty, ty + 0.25f, false);
             }
             else
             {
-                SETTEXCOORDS(0, 1, 0, 1, {});
+                settexcoords(0, 1, 0, 1, false);
             }
-            #undef SETTEXCOORDS
-            //==================================================================
 
-            //========================================================= SETCOLOR
-            #define SETCOLOR(r, g, b, a) \
-            do { \
-                vec4<uchar> col(r, g, b, a); \
-                for(int i = 0; i < 4; ++i) \
-                { \
-                    vs[i].color = col; \
-                } \
-            } while(0)
-            //====================================================== SETMODCOLOR
-            #define SETMODCOLOR SETCOLOR((p->color.r*blend)>>8, (p->color.g*blend)>>8, (p->color.b*blend)>>8, 255)
-            if(type&PT_MOD)
+            if(parttype()&PT_MOD)
             {
-                SETMODCOLOR;
+                setcolor((p->color.r*blend)>>8, (p->color.g*blend)>>8, (p->color.b*blend)>>8, 255, vs);
             }
             else
             {
-                SETCOLOR(p->color.r, p->color.g, p->color.b, blend);
+                setcolor(p->color.r, p->color.g, p->color.b, blend, vs);
             }
 
         }
-        else if(type&PT_MOD)
+        else if(parttype()&PT_MOD)
         {
-            SETMODCOLOR;
+            //note: same call as `if(type&PT_MOD)` above
+            setcolor((p->color.r*blend)>>8, (p->color.g*blend)>>8, (p->color.b*blend)>>8, 255, vs);
         }
-        #undef SETCOLOR
-        #undef SETMODCOLOR
-        //======================================================================
         else
         {
             for(int i = 0; i < 4; ++i)
@@ -969,7 +920,7 @@ struct varenderer : partrenderer
                 vs[i].color.a = blend;
             }
         }
-        if(type&PT_ROT)
+        if(parttype()&PT_ROT)
         {
             genrotpos<T>(o, d, p->size, ts, p->gravity, vs, (p->flags>>2)&0x1F);
         }
@@ -1023,7 +974,7 @@ struct varenderer : partrenderer
         gle::clearvbo();
     }
 
-    void render()
+    void render() override final
     {
         genvbo();
 
@@ -1046,283 +997,275 @@ struct varenderer : partrenderer
         gle::clearvbo();
     }
 };
-typedef varenderer<PT_PART> quadrenderer;
-typedef varenderer<PT_TAPE> taperenderer;
-typedef varenderer<PT_TRAIL> trailrenderer;
 
 // explosions
 
 VARP(softexplosion, 0, 1, 1); //toggles EXPLOSIONSOFT shader
 VARP(softexplosionblend, 1, 16, 64);
 
-namespace sphere
+class fireballrenderer final : public listrenderer
 {
-    struct vert
-    {
-        vec pos;
-        ushort s, t;
-    } *verts = nullptr;
-    GLushort *indices = nullptr;
-    int numverts   = 0,
-        numindices = 0;
-    GLuint vbuf = 0,
-           ebuf = 0;
+    public:
+        fireballrenderer(const char *texname)
+            : listrenderer(texname, 0, PT_FIREBALL|PT_SHADER)
+        {}
 
-    void init(int slices, int stacks)
-    {
-        numverts = (stacks+1)*(slices+1);
-        verts = new vert[numverts];
-        float ds = 1.0f/slices,
-              dt = 1.0f/stacks,
-              t  = 1.0f;
-        for(int i = 0; i < stacks+1; ++i)
+        static constexpr float wobble = 1.25f; //factor to extend particle hitbox by due to placement movement
+
+        void startrender() override final
         {
-            float rho = M_PI*(1-t),
-                  s = 0.0f,
-                  sinrho = i && i < stacks ? std::sin(rho) : 0,
-                  cosrho = !i ? 1 : (i < stacks ? std::cos(rho) : -1);
-            for(int j = 0; j < slices+1; ++j)
+            if(softexplosion)
             {
-                float theta = j==slices ? 0 : 2*M_PI*s;
-                vert &v = verts[i*(slices+1) + j];
-                v.pos = vec(std::sin(theta)*sinrho, std::cos(theta)*sinrho, -cosrho);
-                v.s = static_cast<ushort>(s*0xFFFF);
-                v.t = static_cast<ushort>(t*0xFFFF);
-                s += ds;
+                SETSHADER(explosionsoft);
             }
-            t -= dt;
+            else
+            {
+                SETSHADER(explosion);
+            }
+            sr.enable();
         }
 
-        numindices = (stacks-1)*slices*3*2;
-        indices = new ushort[numindices];
-        GLushort *curindex = indices;
-        for(int i = 0; i < stacks; ++i)
+        void endrender() override final
         {
-            for(int k = 0; k < slices; ++k)
+            sr.disable();
+        }
+
+        void cleanup() override final
+        {
+            sr.cleanup();
+        }
+
+        void seedemitter(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int gravity) override final
+        {
+            pe.maxfade = std::max(pe.maxfade, fade);
+            pe.extendbb(o, (size+1+pe.ent->attr2)*wobble);
+        }
+
+        void renderpart(const listparticle &p, const vec &o, const vec &d, int blend, int ts) override final
+        {
+            float pmax = p.val,
+                  size = p.fade ? static_cast<float>(ts)/p.fade : 1,
+                  psize = p.size + pmax * size;
+
+            if(view.isfoggedsphere(psize*wobble, p.o))
             {
-                int j = i%2 ? slices-k-1 : k;
+                return;
+            }
+            vec dir = static_cast<vec>(o).sub(camera1->o), s, t;
+            float dist = dir.magnitude();
+            bool inside = dist <= psize*wobble;
+            if(inside)
+            {
+                s = camright();
+                t = camup();
+            }
+            else
+            {
+                float mag2 = dir.magnitude2();
+                dir.x /= mag2;
+                dir.y /= mag2;
+                dir.z /= dist;
+                s = vec(dir.y, -dir.x, 0);
+                t = vec(dir.x*dir.z, dir.y*dir.z, -mag2/dist);
+            }
+
+            matrix3 rot(lastmillis/1000.0f*143/RAD, vec(1/SQRT3, 1/SQRT3, 1/SQRT3));
+            LOCALPARAM(texgenS, rot.transposedtransform(s));
+            LOCALPARAM(texgenT, rot.transposedtransform(t));
+
+            matrix4 m(rot, o);
+            m.scale(psize, psize, inside ? -psize : psize);
+            m.mul(camprojmatrix, m);
+            LOCALPARAM(explosionmatrix, m);
+
+            LOCALPARAM(center, o);
+            LOCALPARAMF(blendparams, inside ? 0.5f : 4, inside ? 0.25f : 0);
+            if(2*(p.size + pmax)*wobble >= softexplosionblend)
+            {
+                LOCALPARAMF(softparams, -1.0f/softexplosionblend, 0, inside ? blend/(2*255.0f) : 0);
+            }
+            else
+            {
+                LOCALPARAMF(softparams, 0, -1, inside ? blend/(2*255.0f) : 0);
+            }
+
+            vec color = p.color.tocolor().mul(ldrscale);
+            float alpha = blend/255.0f;
+
+            for(int i = 0; i < (inside ? 2 : 1); ++i)
+            {
+                gle::color(color, i ? alpha/2 : alpha);
                 if(i)
                 {
-                    *curindex++ = i*(slices+1)+j;
-                    *curindex++ = (i+1)*(slices+1)+j;
-                    *curindex++ = i*(slices+1)+j+1;
+                    glDepthFunc(GL_GEQUAL);
                 }
-                if(i+1 < stacks)
+                sr.draw();
+                if(i)
                 {
-                    *curindex++ = i*(slices+1)+j+1;
-                    *curindex++ = (i+1)*(slices+1)+j;
-                    *curindex++ = (i+1)*(slices+1)+j+1;
+                    glDepthFunc(GL_LESS);
                 }
             }
         }
-        if(!vbuf)
+    private:
+        class sphererenderer
         {
-            glGenBuffers(1, &vbuf);
-        }
-        gle::bindvbo(vbuf);
-        glBufferData(GL_ARRAY_BUFFER, numverts*sizeof(vert), verts, GL_STATIC_DRAW);
-        delete[] verts;
-        verts = nullptr;
-        if(!ebuf)
-        {
-            glGenBuffers(1, &ebuf);
-        }
-        gle::bindebo(ebuf);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, numindices*sizeof(GLushort), indices, GL_STATIC_DRAW);
-        delete[] indices;
-        indices = nullptr;
-    }
+            public:
+                void cleanup()
+                {
+                    if(vbuf)
+                    {
+                        glDeleteBuffers(1, &vbuf);
+                        vbuf = 0;
+                    }
+                    if(ebuf)
+                    {
+                        glDeleteBuffers(1, &ebuf);
+                        ebuf = 0;
+                    }
+                }
 
-    void cleanup()
-    {
-        if(vbuf)
-        {
-            glDeleteBuffers(1, &vbuf);
-            vbuf = 0;
-        }
-        if(ebuf)
-        {
-            glDeleteBuffers(1, &ebuf);
-            ebuf = 0;
-        }
-    }
+                void enable()
+                {
+                    if(!vbuf)
+                    {
+                        init(12, 6); //12 slices, 6 stacks
+                    }
+                    gle::bindvbo(vbuf);
+                    gle::bindebo(ebuf);
 
-    void enable()
-    {
-        if(!vbuf)
-        {
-            init(12, 6); //12 slices, 6 stacks
-        }
-        gle::bindvbo(vbuf);
-        gle::bindebo(ebuf);
+                    gle::vertexpointer(sizeof(vert), &verts->pos);
+                    gle::texcoord0pointer(sizeof(vert), &verts->s, GL_UNSIGNED_SHORT, 2, GL_TRUE);
+                    gle::enablevertex();
+                    gle::enabletexcoord0();
+                }
 
-        gle::vertexpointer(sizeof(vert), &verts->pos);
-        gle::texcoord0pointer(sizeof(vert), &verts->s, GL_UNSIGNED_SHORT, 2, GL_TRUE);
-        gle::enablevertex();
-        gle::enabletexcoord0();
-    }
+                void draw()
+                {
+                    glDrawRangeElements(GL_TRIANGLES, 0, numverts-1, numindices, GL_UNSIGNED_SHORT, indices);
+                    xtraverts += numindices;
+                    glde++;
+                }
 
-    void draw()
-    {
-        glDrawRangeElements_(GL_TRIANGLES, 0, numverts-1, numindices, GL_UNSIGNED_SHORT, indices);
-        xtraverts += numindices;
-        glde++;
-    }
+                void disable()
+                {
+                    gle::disablevertex();
+                    gle::disabletexcoord0();
 
-    void disable()
-    {
-        gle::disablevertex();
-        gle::disabletexcoord0();
+                    gle::clearvbo();
+                    gle::clearebo();
+                }
+            private:
+                struct vert
+                {
+                    vec pos;
+                    ushort s, t;
+                } *verts = nullptr;
+                GLushort *indices = nullptr;
+                int numverts   = 0,
+                    numindices = 0;
+                GLuint vbuf = 0,
+                       ebuf = 0;
 
-        gle::clearvbo();
-        gle::clearebo();
-    }
-}
+                void init(int slices, int stacks)
+                {
+                    numverts = (stacks+1)*(slices+1);
+                    verts = new vert[numverts];
+                    float ds = 1.0f/slices,
+                          dt = 1.0f/stacks,
+                          t  = 1.0f;
+                    for(int i = 0; i < stacks+1; ++i)
+                    {
+                        float rho = M_PI*(1-t),
+                              s = 0.0f,
+                              sinrho = i && i < stacks ? std::sin(rho) : 0,
+                              cosrho = !i ? 1 : (i < stacks ? std::cos(rho) : -1);
+                        for(int j = 0; j < slices+1; ++j)
+                        {
+                            float theta = j==slices ? 0 : 2*M_PI*s;
+                            vert &v = verts[i*(slices+1) + j];
+                            v.pos = vec(std::sin(theta)*sinrho, std::cos(theta)*sinrho, -cosrho);
+                            v.s = static_cast<ushort>(s*0xFFFF);
+                            v.t = static_cast<ushort>(t*0xFFFF);
+                            s += ds;
+                        }
+                        t -= dt;
+                    }
 
-static constexpr float wobble = 1.25f; //factor to extend particle hitbox by due to placement movement
+                    numindices = (stacks-1)*slices*3*2;
+                    indices = new ushort[numindices];
+                    GLushort *curindex = indices;
+                    for(int i = 0; i < stacks; ++i)
+                    {
+                        for(int k = 0; k < slices; ++k)
+                        {
+                            int j = i%2 ? slices-k-1 : k;
+                            if(i)
+                            {
+                                *curindex++ = i*(slices+1)+j;
+                                *curindex++ = (i+1)*(slices+1)+j;
+                                *curindex++ = i*(slices+1)+j+1;
+                            }
+                            if(i+1 < stacks)
+                            {
+                                *curindex++ = i*(slices+1)+j+1;
+                                *curindex++ = (i+1)*(slices+1)+j;
+                                *curindex++ = (i+1)*(slices+1)+j+1;
+                            }
+                        }
+                    }
+                    if(!vbuf)
+                    {
+                        glGenBuffers(1, &vbuf);
+                    }
+                    gle::bindvbo(vbuf);
+                    glBufferData(GL_ARRAY_BUFFER, numverts*sizeof(vert), verts, GL_STATIC_DRAW);
+                    delete[] verts;
+                    verts = nullptr;
+                    if(!ebuf)
+                    {
+                        glGenBuffers(1, &ebuf);
+                    }
+                    gle::bindebo(ebuf);
+                    glBufferData(GL_ELEMENT_ARRAY_BUFFER, numindices*sizeof(GLushort), indices, GL_STATIC_DRAW);
+                    delete[] indices;
+                    indices = nullptr;
+                }
+        };
+        sphererenderer sr;
 
-struct fireballrenderer : listrenderer
-{
-    fireballrenderer(const char *texname)
-        : listrenderer(texname, 0, PT_FIREBALL|PT_SHADER)
-    {}
-
-    void startrender()
-    {
-        if(softexplosion)
-        {
-            SETSHADER(explosionsoft);
-        }
-        else
-        {
-            SETSHADER(explosion);
-        }
-        sphere::enable();
-    }
-
-    void endrender()
-    {
-        sphere::disable();
-    }
-
-    void cleanup()
-    {
-        sphere::cleanup();
-    }
-
-    void seedemitter(particleemitter &pe, const vec &o, const vec &d, int fade, float size, int gravity)
-    {
-        pe.maxfade = std::max(pe.maxfade, fade);
-        pe.extendbb(o, (size+1+pe.ent->attr2)*wobble);
-    }
-
-    void renderpart(listparticle *p, const vec &o, const vec &d, int blend, int ts)
-    {
-        float pmax = p->val,
-              size = p->fade ? static_cast<float>(ts)/p->fade : 1,
-              psize = p->size + pmax * size;
-
-        if(view.isfoggedsphere(psize*wobble, p->o))
-        {
-            return;
-        }
-        vec dir = static_cast<vec>(o).sub(camera1->o), s, t;
-        float dist = dir.magnitude();
-        bool inside = dist <= psize*wobble;
-        if(inside)
-        {
-            s = camright;
-            t = camup;
-        }
-        else
-        {
-            float mag2 = dir.magnitude2();
-            dir.x /= mag2;
-            dir.y /= mag2;
-            dir.z /= dist;
-            s = vec(dir.y, -dir.x, 0);
-            t = vec(dir.x*dir.z, dir.y*dir.z, -mag2/dist);
-        }
-
-        matrix3 rot(lastmillis/1000.0f*143*RAD, vec(1/SQRT3, 1/SQRT3, 1/SQRT3));
-        LOCALPARAM(texgenS, rot.transposedtransform(s));
-        LOCALPARAM(texgenT, rot.transposedtransform(t));
-
-        matrix4 m(rot, o);
-        m.scale(psize, psize, inside ? -psize : psize);
-        m.mul(camprojmatrix, m);
-        LOCALPARAM(explosionmatrix, m);
-
-        LOCALPARAM(center, o);
-        LOCALPARAMF(blendparams, inside ? 0.5f : 4, inside ? 0.25f : 0);
-        if(2*(p->size + pmax)*wobble >= softexplosionblend)
-        {
-            LOCALPARAMF(softparams, -1.0f/softexplosionblend, 0, inside ? blend/(2*255.0f) : 0);
-        }
-        else
-        {
-            LOCALPARAMF(softparams, 0, -1, inside ? blend/(2*255.0f) : 0);
-        }
-
-        vec color = p->color.tocolor().mul(ldrscale);
-        float alpha = blend/255.0f;
-
-        for(int i = 0; i < (inside ? 2 : 1); ++i)
-        {
-            gle::color(color, i ? alpha/2 : alpha);
-            if(i)
-            {
-                glDepthFunc(GL_GEQUAL);
-            }
-            sphere::draw();
-            if(i)
-            {
-                glDepthFunc(GL_LESS);
-            }
-        }
-    }
 };
 static fireballrenderer fireballs("media/particle/explosion.png"), pulsebursts("media/particle/pulse_burst.png");
 
 //end explosion code
 
-struct softquadrenderer : quadrenderer
-{
-    softquadrenderer(const char *texname, int type, int stain = -1)
-        : quadrenderer(texname, type|PT_SOFT, stain)
-    {
-    }
-};
-
 static partrenderer *parts[] =
 {
-    new quadrenderer("<grey>media/particle/blood.png", PT_PART|PT_FLIP|PT_MOD|PT_RND4|PT_COLLIDE, Stain_Blood), // blood spats (note: rgb is inverted)
-    new trailrenderer("media/particle/base.png", PT_TRAIL|PT_LERP),                            // water, entity
-    new quadrenderer("<grey>media/particle/smoke.png", PT_PART|PT_FLIP|PT_LERP),               // smoke
-    new quadrenderer("<grey>media/particle/steam.png", PT_PART|PT_FLIP),                       // steam
-    new quadrenderer("<grey>media/particle/flames.png", PT_PART|PT_HFLIP|PT_RND4|PT_BRIGHT),   // flame
-    new taperenderer("media/particle/flare.png", PT_TAPE|PT_BRIGHT),                           // streak
-    new taperenderer("media/particle/rail_trail.png", PT_TAPE|PT_FEW|PT_BRIGHT),               // rail trail
-    new taperenderer("media/particle/pulse_side.png", PT_TAPE|PT_FEW|PT_BRIGHT),               // pulse side
-    new quadrenderer("media/particle/pulse_front.png", PT_PART|PT_FLIP|PT_FEW|PT_BRIGHT),      // pulse front
-    &fireballs,                                                                                // explosion fireball
-    &pulsebursts,                                                                              // pulse burst
-    new quadrenderer("media/particle/spark.png", PT_PART|PT_FLIP|PT_BRIGHT),                   // sparks
-    new quadrenderer("media/particle/base.png",  PT_PART|PT_FLIP|PT_BRIGHT),                   // edit mode entities
-    new quadrenderer("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE),           // colliding snow
-    new quadrenderer("media/particle/rail_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),  // rail muzzle flash
-    new quadrenderer("media/particle/pulse_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK), // pulse muzzle flash
-    new quadrenderer("media/interface/hud/items.png", PT_PART|PT_FEW|PT_ICON),                 // hud icon
-    new quadrenderer("<colorify:1/1/1>media/interface/hud/items.png", PT_PART|PT_FEW|PT_ICON), // grey hud icon
-    &texts,                                                                                    // text
-    &meters,                                                                                   // meter
-    &metervs,                                                                                  // meter vs.
+    new varenderer<PT_PART>("<grey>media/particle/blood.png", PT_PART|PT_FLIP|PT_MOD|PT_RND4|PT_COLLIDE, Stain_Blood), // blood spats (note: rgb is inverted)
+    new varenderer<PT_TRAIL>("media/particle/base.png", PT_TRAIL|PT_LERP),                                  // water, entity
+    new varenderer<PT_PART>("<grey>media/particle/smoke.png", PT_PART|PT_FLIP|PT_LERP),                     // smoke
+    new varenderer<PT_PART>("<grey>media/particle/steam.png", PT_PART|PT_FLIP),                             // steam
+    new varenderer<PT_PART>("<grey>media/particle/flames.png", PT_PART|PT_HFLIP|PT_RND4|PT_BRIGHT),         // flame
+    new varenderer<PT_TAPE>("media/particle/flare.png", PT_TAPE|PT_BRIGHT),                                 // streak
+    new varenderer<PT_TAPE>("media/particle/rail_trail.png", PT_TAPE|PT_FEW|PT_BRIGHT),                     // rail trail
+    new varenderer<PT_TAPE>("media/particle/pulse_side.png", PT_TAPE|PT_FEW|PT_BRIGHT),                     // pulse side
+    new varenderer<PT_PART>("media/particle/pulse_front.png", PT_PART|PT_FLIP|PT_FEW|PT_BRIGHT),            // pulse front
+    &fireballs,                                                                                             // explosion fireball
+    &pulsebursts,                                                                                           // pulse burst
+    new varenderer<PT_PART>("media/particle/spark.png", PT_PART|PT_FLIP|PT_BRIGHT),                         // sparks
+    new varenderer<PT_PART>("media/particle/base.png",  PT_PART|PT_FLIP|PT_BRIGHT),                         // edit mode entities
+    new varenderer<PT_PART>("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE),                 // colliding snow
+    new varenderer<PT_PART>("media/particle/rail_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),   // rail muzzle flash
+    new varenderer<PT_PART>("media/particle/pulse_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),  // pulse muzzle flash
+    new varenderer<PT_PART>("media/interface/hud/items.png", PT_PART|PT_FEW|PT_ICON),                       // hud icon
+    new varenderer<PT_PART>("<colorify:1/1/1>media/interface/hud/items.png", PT_PART|PT_FEW|PT_ICON),       // grey hud icon
+    &meters,                                                                                                // meter
+    &metervs,                                                                                               // meter vs.
 };
 
 //helper function to return int with # of entries in *parts[]
-static constexpr int numpartparts()
+static constexpr size_t numparts()
 {
-    return static_cast<int>(sizeof(parts)/sizeof(parts[0]));
+    return sizeof(parts)/sizeof(parts[0]);
 }
 
 void initparticles(); //need to prototype either the vars or the the function
@@ -1352,13 +1295,13 @@ void initparticles()
     {
         particletextshader = lookupshaderbyname("particletext");
     }
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
-        parts[i]->init(parts[i]->type&PT_FEW ? std::min(fewparticles, maxparticles) : maxparticles);
+        parts[i]->init(parts[i]->parttype()&PT_FEW ? std::min(fewparticles, maxparticles) : maxparticles);
     }
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
-        loadprogress = static_cast<float>(i+1)/numpartparts();
+        loadprogress = static_cast<float>(i+1)/numparts();
         parts[i]->preload();
     }
     loadprogress = 0;
@@ -1366,7 +1309,7 @@ void initparticles()
 
 void clearparticles()
 {
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
         parts[i]->reset();
     }
@@ -1375,7 +1318,7 @@ void clearparticles()
 
 void cleanupparticles()
 {
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
         parts[i]->cleanup();
     }
@@ -1383,39 +1326,22 @@ void cleanupparticles()
 
 void removetrackedparticles(physent *owner)
 {
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
         parts[i]->resettracked(owner);
     }
 }
 
-VARN(debugparticles, debugparts, 0, 0, 1);
+static int debugparts = variable("debugparticles", 0, 0, 1, &debugparts, nullptr, 0);
 
-void debugparticles()
-{
-    if(!debugparts)
-    {
-        return;
-    }
-    int n = sizeof(parts)/sizeof(parts[0]);
-    pushhudmatrix();
-    hudmatrix.ortho(0, FONTH*n*2*vieww/static_cast<float>(viewh), FONTH*n*2, 0, -1, 1); // squeeze into top-left corner
-    flushhudmatrix();
-    for(int i = 0; i < n; ++i)
-    {
-        draw_text(parts[i]->info, FONTH, (i+n/2)*FONTH);
-    }
-    pophudmatrix();
-}
-
-void GBuffer::renderparticles(int layer)
+void GBuffer::renderparticles(int layer) const
 {
     canstep = layer != ParticleLayer_Under;
 
     //want to debug BEFORE the lastpass render (that would delete particles)
     if(debugparts && (layer == ParticleLayer_All || layer == ParticleLayer_Under))
     {
-        for(int i = 0; i < numpartparts(); ++i)
+        for(size_t i = 0; i < numparts(); ++i)
         {
             parts[i]->debuginfo();
         }
@@ -1426,10 +1352,10 @@ void GBuffer::renderparticles(int layer)
          flagmask = PT_LERP|PT_MOD|PT_BRIGHT|PT_NOTEX|PT_SOFT|PT_SHADER,
          excludemask = layer == ParticleLayer_All ? ~0 : (layer != ParticleLayer_NoLayer ? PT_NOLAYER : 0);
 
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
         partrenderer *p = parts[i];
-        if((p->type&PT_NOLAYER) == excludemask || !p->haswork())
+        if((p->parttype()&PT_NOLAYER) == excludemask || !p->haswork())
         {
             continue;
         }
@@ -1440,7 +1366,7 @@ void GBuffer::renderparticles(int layer)
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-            glActiveTexture_(GL_TEXTURE2);
+            glActiveTexture(GL_TEXTURE2);
             if(msaalight)
             {
                 glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
@@ -1449,10 +1375,10 @@ void GBuffer::renderparticles(int layer)
             {
                 glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
             }
-            glActiveTexture_(GL_TEXTURE0);
+            glActiveTexture(GL_TEXTURE0);
         }
 
-        uint flags = p->type & flagmask,
+        uint flags = p->parttype() & flagmask,
              changedbits = flags ^ lastflags;
         if(changedbits)
         {
@@ -1556,8 +1482,8 @@ static void splash(int type, int color, int radius, int num, int fade, const vec
         return;
     }
     //ugly ternary assignment
-    float collidez = parts[type]->type&PT_COLLIDE ?
-                     p.z - rootworld.raycube(p, vec(0, 0, -1), collideradius, Ray_ClipMat) + (parts[type]->stain >= 0 ? collideerror : 0) :
+    float collidez = parts[type]->parttype()&PT_COLLIDE ?
+                     p.z - rootworld.raycube(p, vec(0, 0, -1), collideradius, Ray_ClipMat) + (parts[type]->hasstain() ? collideerror : 0) :
                      -1;
     int fmin = 1,
         fmax = fade*3;
@@ -1629,35 +1555,6 @@ void particle_trail(int type, int fade, const vec &s, const vec &e, int color, f
 
 VARP(particletext, 0, 1, 1);
 VARP(maxparticletextdistance, 0, 128, 10000); //cubits at which text can be rendered (128 = 16m)
-
-void particle_text(const vec &s, const char *t, int type, int fade, int color, float size, int gravity)
-{
-    if(minimized)
-    {
-        return;
-    }
-    if(!particletext || camera1->o.dist(s) > maxparticletextdistance)
-    {
-        return;
-    }
-    particle *p = newparticle(s, vec(0, 0, 1), fade, type, color, size, gravity);
-    p->text = t;
-}
-
-void particle_textcopy(const vec &s, const char *t, int type, int fade, int color, float size, int gravity)
-{
-    if(minimized)
-    {
-        return;
-    }
-    if(!particletext || camera1->o.dist(s) > maxparticletextdistance)
-    {
-        return;
-    }
-    particle *p = newparticle(s, vec(0, 0, 1), fade, type, color, size, gravity);
-    p->text = newstring(t);
-    p->flags = 1;
-}
 
 void particle_icon(const vec &s, int ix, int iy, int type, int fade, int color, float size, int gravity)
 {
@@ -1736,7 +1633,7 @@ static void regularshape(int type, int radius, int color, int dir, int num, int 
     {
         return;
     }
-    int basetype = parts[type]->type&0xFF;
+    int basetype = parts[type]->parttype()&0xFF;
     bool flare = (basetype == PT_TAPE),
          inv = (dir&0x20)!=0,
          taper = (dir&0x40)!=0 && !seedemitter;
@@ -1835,12 +1732,12 @@ static void regularshape(int type, int radius, int color, int dir, int num, int 
         {
             vec d = vec(to).sub(from).rescale(vel); //velocity
             particle *n = newparticle(from, d, randomint(fade*3)+1, type, color, size, gravity);
-            if(parts[type]->type&PT_COLLIDE)
+            if(parts[type]->parttype()&PT_COLLIDE)
             {
                 //long nasty ternary assignment
-                n->val = from.z - rootworld.raycube(from, vec(0, 0, -1), parts[type]->stain >= 0 ?
+                n->val = from.z - rootworld.raycube(from, vec(0, 0, -1), parts[type]->hasstain() ?
                          collideradius :
-                         std::max(from.z, 0.0f), Ray_ClipMat) + (parts[type]->stain >= 0 ? collideerror : 0);
+                         std::max(from.z, 0.0f), Ray_ClipMat) + (parts[type]->hasstain() ? collideerror : 0);
             }
         }
     }
@@ -1871,8 +1768,7 @@ void regular_particle_flame(int type, const vec &p, float radius, float height, 
     }
     regularflame(type, p, radius, height, color, density, scale, speed, fade, gravity);
 }
-
-static void makeparticles(entity &e)
+void cubeworld::makeparticles(const entity &e)
 {
     switch(e.attr1)
     {
@@ -1957,25 +1853,19 @@ static void makeparticles(entity &e)
         }
         default:
         {
-            if(!editmode)
-            {
-                DEF_FORMAT_STRING(ds, "particles %d?", e.attr1);
-                particle_textcopy(e.o, ds, Part_Text, 1, 0x6496FF, 2.0f);
-            }
             break;
         }
     }
 }
 
-void seedparticles()
+void cubeworld::seedparticles()
 {
     renderprogress(0, "seeding particles");
     addparticleemitters();
     canemit = true;
-    for(uint i = 0; i < emitters.size(); i++)
+    for(particleemitter &pe : emitters)
     {
-        particleemitter &pe = emitters[i];
-        extentity &e = *pe.ent;
+        const extentity &e = *pe.ent;
         seedemitter = &pe;
         for(int millis = 0; millis < seedmillis; millis += std::min(emitmillis, seedmillis/10))
         {
@@ -1987,8 +1877,11 @@ void seedparticles()
     }
 }
 
-void updateparticles()
+void cubeworld::updateparticles()
 {
+    //note: static int carried across all calls of function
+    static int lastemitframe = 0;
+
     if(regenemitters) //regenemitters called whenever a new particle generator is placed
     {
         addparticleemitters();
@@ -2007,7 +1900,7 @@ void updateparticles()
     {
         canemit = false;
     }
-    for(int i = 0; i < numpartparts(); ++i)
+    for(size_t i = 0; i < numparts(); ++i)
     {
         parts[i]->update();
     }
@@ -2016,10 +1909,9 @@ void updateparticles()
         int emitted = 0,
             replayed = 0;
         addedparticles = 0;
-        for(uint i = 0; i < emitters.size(); i++) //foreach particle emitter
+        for(particleemitter& pe : emitters) //foreach particle emitter
         {
-            particleemitter &pe = emitters[i]; //bring one of the emitters into scope
-            extentity &e = *pe.ent; //get info for the entity associated w/ent
+            const extentity &e = *pe.ent; //get info for the entity associated w/ent
             if(e.o.dist(camera1->o) > maxparticledistance) //distance check (don't update faraway particle ents)
             {
                 pe.lastemit = lastmillis;
@@ -2053,22 +1945,10 @@ void updateparticles()
     }
     if(editmode) // show sparkly thingies for map entities in edit mode
     {
-        const vector<extentity *> &ents = entities::getents();
-        // note: order matters in this case as particles of the same type are drawn in the reverse order that they are added
-        for(int i = 0; i < entgroup.length(); i++)
+        const std::vector<extentity *> &ents = entities::getents();
+        for(extentity * const &e : ents)
         {
-            entity &e = *ents[entgroup[i]];
-            particle_textcopy(e.o, entname(e), Part_Text, 1, 0xFF4B19, 2.0f);
-        }
-        for(int i = 0; i < ents.length(); i++)
-        {
-            entity &e = *ents[i];
-            if(e.type==EngineEnt_Empty)
-            {
-                continue;
-            }
-            particle_textcopy(e.o, entname(e), Part_Text, 1, 0x1EC850, 2.0f);
-            regular_particle_splash(Part_Edit, 2, 40, e.o, 0x3232FF, 0.32f*particlesize/100.0f);
+            regular_particle_splash(Part_Edit, 2, 40, e->o, 0x3232FF, 0.32f*particlesize/100.0f);
         }
     }
 }

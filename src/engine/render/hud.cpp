@@ -13,8 +13,11 @@
 #include "renderlights.h"
 #include "renderparticles.h"
 #include "rendertext.h"
+#include "renderttf.h"
 #include "rendertimers.h"
 #include "renderwindow.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/console.h"
@@ -36,7 +39,7 @@ namespace
     VARP(damagecompassmin, 1, 25, 1000);
     VARP(damagecompassmax, 1, 200, 1000);
 
-    float damagedirs[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    std::array<float, 8> damagedirs = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
     void drawdamagecompass(int w, int h)
     {
@@ -44,9 +47,9 @@ namespace
 
         int dirs = 0;
         float size = damagecompasssize/100.0f*std::min(h, w)/2.0f;
-        for(int i = 0; i < 8; ++i)
+        for(float &dir : damagedirs)
         {
-            if(damagedirs[i]>0)
+            if(dir > 0)
             {
                 if(!dirs)
                 {
@@ -58,12 +61,12 @@ namespace
                 dirs++;
 
                 float logscale = 32,
-                      scale = log(1 + (logscale - 1)*damagedirs[i]) / std::log(logscale),
+                      scale = log(1 + (logscale - 1)*dir) / std::log(logscale),
                       offset = -size/2.0f-std::min(h, w)/4.0f;
                 matrix4x3 m;
                 m.identity();
                 m.settranslation(w/2, h/2, 0);
-                m.rotate_around_z(i*45*RAD);
+                m.rotate_around_z(dir*45/RAD);
                 m.translate(0, offset, 0);
                 m.scale(size*scale);
 
@@ -73,7 +76,7 @@ namespace
 
                 // fade in log space so short blips don't disappear too quickly
                 scale -= static_cast<float>(curtime)/damagecompassfade;
-                damagedirs[i] = scale > 0 ? (std::pow(logscale, scale) - 1) / (logscale - 1) : 0;
+                dir = scale > 0 ? (std::pow(logscale, scale) - 1) / (logscale - 1) : 0;
             }
         }
         if(dirs)
@@ -94,16 +97,17 @@ namespace
 
     void drawdamagescreen(int w, int h)
     {
+        static Texture *damagetex = nullptr;
+        //preload this texture even if not going to draw, to prevent stutter when first hit
+        if(!damagetex)
+        {
+            damagetex = textureload("media/interface/hud/damage.png", 3);
+        }
         if(lastmillis >= damageblendmillis)
         {
             return;
         }
         hudshader->set();
-        static Texture *damagetex = nullptr;
-        if(!damagetex)
-        {
-            damagetex = textureload("media/interface/hud/damage.png", 3);
-        }
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         glBindTexture(GL_TEXTURE_2D, damagetex->id);
         float fade = damagescreenalpha/100.0f;
@@ -143,8 +147,8 @@ namespace
         }
     }
 
-    const int maxcrosshairs  = 4;
-    Texture *crosshairs[maxcrosshairs] = { nullptr, nullptr, nullptr, nullptr };
+    const int maxcrosshairs = 4;
+    std::array<Texture *, maxcrosshairs> crosshairs = { nullptr, nullptr, nullptr, nullptr };
 
     void loadcrosshair(const char *name, int i)
     {
@@ -164,12 +168,6 @@ namespace
         }
     }
 
-    void loadcrosshaircmd(const char *name, int *i)
-    {
-        loadcrosshair(name, *i);
-    }
-    COMMANDN(loadcrosshair, loadcrosshaircmd, "si");
-
     void getcrosshair(int *i)
     {
         const char *name = "";
@@ -183,7 +181,6 @@ namespace
         }
         result(name);
     }
-    COMMAND(getcrosshair, "i");
 
     void drawcrosshair(int w, int h, int crosshairindex)
     {
@@ -272,8 +269,8 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
      */
     static int framemillis = 0;
 
-    int w = hudw,
-        h = hudh;
+    int w = hudw(),
+        h = hudh();
     if(forceaspect)
     {
         w = static_cast<int>(ceil(h*forceaspect));
@@ -292,8 +289,6 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
 
     glEnable(GL_BLEND);
 
-    debugparticles();
-
     if(!mainmenu)
     {
         drawdamagescreen(w, h);
@@ -308,21 +303,21 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
         if(showstats)
         {
             pushhudscale(conscale);
-
+            ttr.fontsize(42);
             int roffset = 0;
             if(showfps)
             {
-                static int lastfps = 0,
-                           prevfps[3] = { 0, 0, 0 },
-                           curfps[3]  = { 0, 0, 0 };
+                static int lastfps = 0;
+                static std::array<int, 3> prevfps = { 0, 0, 0 },
+                                          curfps = { 0, 0, 0 };
                 if(totalmillis - lastfps >= statrate)
                 {
-                    memcpy(prevfps, curfps, sizeof(prevfps));
+                    prevfps = curfps;
                     lastfps = totalmillis - (totalmillis%statrate);
                 }
-                int nextfps[3];
+                std::array<int, 3> nextfps;
                 getfps(nextfps[0], nextfps[1], nextfps[2]);
-                for(int i = 0; i < 3; ++i)
+                for(size_t i = 0; i < curfps.size(); ++i)
                 {
                     if(prevfps[i]==curfps[i])
                     {
@@ -331,11 +326,16 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
                 }
                 if(showfpsrange)
                 {
-                    draw_textf("fps %d+%d-%d", conw-7*FONTH, conh-FONTH*3/2, curfps[0], curfps[1], curfps[2]);
+                    char fpsstring[20];
+                    std::sprintf(fpsstring, "fps %d+%d-%d", curfps[0], curfps[1], curfps[2]);
+                    ttr.renderttf(fpsstring, {0xFF, 0xFF, 0xFF, 0},  conw-(1000*conscale), conh-(360*conscale));
+                    //draw_textf("fps %d+%d-%d", conw-7*FONTH, conh-FONTH*3/2, curfps[0], curfps[1], curfps[2]);
                 }
                 else
                 {
-                    draw_textf("fps %d", conw-5*FONTH, conh-FONTH*3/2, curfps[0]);
+                    char fpsstring[20];
+                    std::sprintf(fpsstring, "fps %d", curfps[0]);
+                    ttr.renderttf(fpsstring, {0xFF, 0xFF, 0xFF, 0},  conw-(1000*conscale), conh-(360*conscale));
                 }
                 roffset += FONTH;
             }
@@ -365,7 +365,9 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
                         *dst++ = tolower(*src++);
                     }
                     *dst++ = '\0';
-                    draw_text(buf, conw-5*FONTH, conh-FONTH*3/2-roffset);
+
+                    ttr.renderttf(buf, { 0xFF, 0xFF, 0xFF, 0 }, conw-(1000*conscale), conh-(540*conscale));
+                    //draw_text(buf, conw-5*FONTH, conh-FONTH*3/2-roffset);
                     roffset += FONTH;
                 }
             }
@@ -400,16 +402,16 @@ void gl_drawhud(int crosshairindex, void(* hud2d)())
     }
 }
 
-void writecrosshairs(stream *f)
+void writecrosshairs(std::fstream& f)
 {
     for(int i = 0; i < maxcrosshairs; ++i)
     {
         if(crosshairs[i] && crosshairs[i]!=notexture)
         {
-            f->printf("loadcrosshair %s %d\n", escapestring(crosshairs[i]->name), i);
+            f << "loadcrosshair " << escapestring(crosshairs[i]->name) << " " << i << std::endl;
         }
     }
-    f->printf("\n");
+    f << std::endl;
 }
 
 void resethudshader()
@@ -420,7 +422,7 @@ void resethudshader()
 
 FVARP(conscale, 1e-3f, 0.33f, 1e3f); //size of readouts, console, and history
 //note: fps displayed is the average over the statrate duration
-VAR(statrate, 1, 200, 1000);  //update time for fps (not other hud readouts)
+VAR(statrate, 1, 200, 1000);  //update time for fps and edit stats
 VAR(showhud, 0, 1, 1);
 
 void vectoryawpitch(const vec &v, float &yaw, float &pitch)
@@ -431,8 +433,8 @@ void vectoryawpitch(const vec &v, float &yaw, float &pitch)
     }
     else
     {
-        yaw = -std::atan2(v.x, v.y)/RAD;
-        pitch = std::asin(v.z/v.magnitude())/RAD;
+        yaw = -std::atan2(v.x, v.y)*RAD;
+        pitch = std::asin(v.z/v.magnitude())*RAD;
     }
 }
 
@@ -460,7 +462,7 @@ void damagecompass(int n, const vec &loc)
     {
         yaw = 360 - std::fmod(-yaw, 360);
     }
-    int dir = (static_cast<int>(yaw+22.5f)%360)/45;
+    int dir = (static_cast<int>(yaw+22.5f)%360)/45; //360/45 = 8, so divide into 8 octants with 0 degrees centering octant 0
     damagedirs[dir] += std::max(n, damagecompassmin)/static_cast<float>(damagecompassmax);
     if(damagedirs[dir]>1)
     {
@@ -479,4 +481,10 @@ void damageblend(int n)
         damageblendmillis = lastmillis;
     }
     damageblendmillis += std::clamp(n, damagescreenmin, damagescreenmax)*damagescreenfactor;
+}
+
+void inithudcmds()
+{
+    addcommand("loadcrosshair", reinterpret_cast<identfun>(+[](const char *name, int *i){loadcrosshair(name, *i);}), "si", Id_Command);
+    addcommand("getcrosshair", reinterpret_cast<identfun>(getcrosshair), "i", Id_Command);
 }

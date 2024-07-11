@@ -10,6 +10,8 @@
 #include "imagedata.h"
 #include "octarender.h"
 #include "renderwindow.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "world/light.h"
@@ -33,12 +35,14 @@ extern const texrotation texrotations[8] =
     {  true,  true,  true }, // 7: flipped transpose
 };
 
+//copies every other pixel into a destination buffer
+//sw,sh are source width/height
 template<int BPP>
-static void halvetexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst)
+static void halvetexture(const uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst)
 {
-    for(uchar *yend = &src[sh*stride]; src < yend;)
+    for(const uchar *yend = &src[sh*stride]; src < yend;)
     {
-        for(uchar *xend = &src[sw*BPP], *xsrc = src; xsrc < xend; xsrc += 2*BPP, dst += BPP)
+        for(const uchar *xend = &src[sw*BPP], *xsrc = src; xsrc < xend; xsrc += 2*BPP, dst += BPP)
         {
             for(int i = 0; i < BPP; ++i)
             {
@@ -50,7 +54,7 @@ static void halvetexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uc
 }
 
 template<int BPP>
-static void shifttexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst, uint dw, uint dh)
+static void shifttexture(const uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst, uint dw, uint dh)
 {
     uint wfrac = sw/dw,
          hfrac = sh/dh,
@@ -65,20 +69,24 @@ static void shifttexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uc
         hshift++;
     }
     uint tshift = wshift + hshift;
-    for(uchar *yend = &src[sh*stride]; src < yend;)
+    for(const uchar *yend = &src[sh*stride]; src < yend;)
     {
-        for(uchar *xend = &src[sw*BPP], *xsrc = src; xsrc < xend; xsrc += wfrac*BPP, dst += BPP)
+        for(const uchar *xend = &src[sw*BPP], *xsrc = src; xsrc < xend; xsrc += wfrac*BPP, dst += BPP)
         {
+
             uint t[BPP] = {0};
-            for(uchar *ycur = xsrc, *xend = &ycur[wfrac*BPP], *yend = &src[hfrac*stride];
+            for(const uchar *ycur = xsrc, *xend = &ycur[wfrac*BPP], *yend = &src[hfrac*stride];
                 ycur < yend;
                 ycur += stride, xend += stride)
             {
-                for(uchar *xcur = ycur; xcur < xend; xcur += BPP)
+                //going to (xend - 1) seems to be necessary to avoid buffer overrun
+                for(const uchar *xcur = ycur; xcur < xend -1; xcur += BPP)
+                {
                     for(int i = 0; i < BPP; ++i)
                     {
                         t[i] += xcur[i];
                     }
+                }
             }
             for(int i = 0; i < BPP; ++i)
             {
@@ -90,7 +98,7 @@ static void shifttexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uc
 }
 
 template<int BPP>
-static void scaletexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst, uint dw, uint dh)
+static void scaletexture(const uchar * RESTRICT src, uint sw, uint sh, uint stride, uchar * RESTRICT dst, uint dw, uint dh)
 {
     uint wfrac = (sw<<12)/dw,
          hfrac = (sh<<12)/dh,
@@ -176,7 +184,7 @@ static void scaletexture(uchar * RESTRICT src, uint sw, uint sh, uint stride, uc
     }
 }
 
-void scaletexture(uchar * RESTRICT src, uint sw, uint sh, uint bpp, uint pitch, uchar * RESTRICT dst, uint dw, uint dh)
+void scaletexture(const uchar * RESTRICT src, uint sw, uint sh, uint bpp, uint pitch, uchar * RESTRICT dst, uint dw, uint dh)
 {
     if(sw == dw*2 && sh == dh*2)
     {
@@ -210,62 +218,8 @@ void scaletexture(uchar * RESTRICT src, uint sw, uint sh, uint bpp, uint pitch, 
     }
 }
 
-void reorientnormals(uchar * RESTRICT src, int sw, int sh, int bpp, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
-{
-    int stridex = bpp,
-        stridey = bpp;
-    if(swapxy)
-    {
-        stridex *= sh;
-    }
-    else
-    {
-        stridey *= sw;
-    }
-    if(flipx)
-    {
-        dst += (sw-1)*stridex;
-        stridex = -stridex;
-    }
-    if(flipy)
-    {
-        dst += (sh-1)*stridey;
-        stridey = -stridey;
-    }
-    uchar *srcrow = src;
-    for(int i = 0; i < sh; ++i)
-    {
-        for(uchar *curdst = dst, *src = srcrow, *end = &srcrow[sw*bpp]; src < end;)
-        {
-            uchar nx = *src++, ny = *src++;
-            if(flipx)
-            {
-                nx = 255-nx;
-            }
-            if(flipy)
-            {
-                ny = 255-ny;
-            }
-            if(swapxy)
-            {
-                std::swap(nx, ny);
-            }
-            curdst[0] = nx;
-            curdst[1] = ny;
-            curdst[2] = *src++;
-            if(bpp > 3)
-            {
-                curdst[3] = *src++;
-            }
-            curdst += stridex;
-        }
-        srcrow += stride;
-        dst += stridey;
-    }
-}
-
 template<int BPP>
-static void reorienttexture(uchar * RESTRICT src, int sw, int sh, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
+static void reorienttexture(const uchar * RESTRICT src, int sw, int sh, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
 {
     int stridex = BPP,
         stridey = BPP;
@@ -287,10 +241,13 @@ static void reorienttexture(uchar * RESTRICT src, int sw, int sh, int stride, uc
         dst += (sh-1)*stridey;
         stridey = -stridey;
     }
-    uchar *srcrow = src;
+    const uchar *srcrow = src;
     for(int i = 0; i < sh; ++i)
     {
-        for(uchar *curdst = dst, *src = srcrow, *end = &srcrow[sw*BPP]; src < end;)
+        uchar* curdst;
+        const uchar* src;
+        const uchar* end;
+        for(curdst = dst, src = srcrow, end = &srcrow[sw*BPP]; src < end;)
         {
             for(int k = 0; k < BPP; ++k)
             {
@@ -303,7 +260,7 @@ static void reorienttexture(uchar * RESTRICT src, int sw, int sh, int stride, uc
     }
 }
 
-void reorienttexture(uchar * RESTRICT src, int sw, int sh, int bpp, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
+void reorienttexture(const uchar * RESTRICT src, int sw, int sh, int bpp, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
 {
     switch(bpp)
     {
@@ -325,18 +282,15 @@ VARF(trilinear,     0,   1,      1,     initwarning("texture filtering", Init_Lo
 VARF(bilinear,      0,   1,      1,     initwarning("texture filtering", Init_Load));
 VARFP(aniso,        0,   0,      16,    initwarning("texture filtering", Init_Load));
 
-int formatsize(GLenum format)
+static int formatsize(GLenum format)
 {
     switch(format)
     {
         case GL_RED:
-        case GL_LUMINANCE:
-        case GL_ALPHA:
         {
             return 1;
         }
         case GL_RG:
-        case GL_LUMINANCE_ALPHA:
         {
             return 2;
         }
@@ -366,34 +320,11 @@ static void resizetexture(int w, int h, bool mipmap, bool canreduce, GLenum targ
     }
     w = std::min(w, sizelimit);
     h = std::min(h, sizelimit);
-    if(target!=GL_TEXTURE_RECTANGLE && (w&(w-1) || h&(h-1)))
-    {
-        tw = th = 1;
-        while(tw < w)
-        {
-            tw *= 2;
-        }
-        while(th < h)
-        {
-            th *= 2;
-        }
-        if(w < tw - tw/4)
-        {
-            tw /= 2;
-        }
-        if(h < th - th/4)
-        {
-            th /= 2;
-        }
-    }
-    else
-    {
-        tw = w;
-        th = h;
-    }
+    tw = w;
+    th = h;
 }
 
-static int texalign(const void *data, int w, int bpp)
+static int texalign(int w, int bpp)
 {
     int stride = w*bpp;
     if(stride&1)
@@ -425,7 +356,7 @@ static void uploadtexture(GLenum target, GLenum internal, int tw, int th, GLenum
     else if(tw*bpp != pitch)
     {
         row = pitch/bpp;
-        rowalign = texalign(pixels, pitch, 1);
+        rowalign = texalign(pitch, 1);
         while(rowalign > 0 && ((row*bpp + rowalign - 1)/rowalign)*rowalign != pitch)
         {
             rowalign >>= 1;
@@ -436,7 +367,7 @@ static void uploadtexture(GLenum target, GLenum internal, int tw, int th, GLenum
             buf = new uchar[tw*th*bpp];
             for(int i = 0; i < th; ++i)
             {
-                memcpy(&buf[i*tw*bpp], &(const_cast<uchar *>(reinterpret_cast<const uchar *>(pixels)))[i*pitch], tw*bpp);
+                std::memcpy(&buf[i*tw*bpp], &(const_cast<uchar *>(reinterpret_cast<const uchar *>(pixels)))[i*pitch], tw*bpp);
             }
         }
     }
@@ -447,7 +378,7 @@ static void uploadtexture(GLenum target, GLenum internal, int tw, int th, GLenum
         {
             pitch = tw*bpp;
         }
-        int srcalign = row > 0 ? rowalign : texalign(src, pitch, 1);
+        int srcalign = row > 0 ? rowalign : texalign(pitch, 1);
         if(align != srcalign)
         {
             glPixelStorei(GL_UNPACK_ALIGNMENT, align = srcalign);
@@ -509,11 +440,11 @@ static void uploadcompressedtexture(GLenum target, GLenum subtarget, GLenum form
         {
             if(target==GL_TEXTURE_1D)
             {
-                glCompressedTexImage1D_(subtarget, level, format, w, 0, size, data);
+                glCompressedTexImage1D(subtarget, level, format, w, 0, size, data);
             }
             else
             {
-                glCompressedTexImage2D_(subtarget, level, format, w, h, 0, size, data);
+                glCompressedTexImage2D(subtarget, level, format, w, h, 0, size, data);
             }
             level++;
             if(!mipmap)
@@ -572,7 +503,7 @@ const GLint *swizzlemask(GLenum format)
     return nullptr;
 }
 
-void setuptexparameters(int tnum, const void *pixels, int clamp, int filter, GLenum format, GLenum target, bool swizzle)
+static void setuptexparameters(int tnum, const void *pixels, int clamp, int filter, GLenum format, GLenum target, bool swizzle)
 {
     glBindTexture(target, tnum);
     glTexParameteri(target, GL_TEXTURE_WRAP_S, clamp&1 ? GL_CLAMP_TO_EDGE : (clamp&0x100 ? GL_MIRRORED_REPEAT : GL_REPEAT));
@@ -711,36 +642,6 @@ static GLenum textype(GLenum &component, GLenum &format)
             }
             break;
         }
-        case GL_LUMINANCE8:
-        case GL_LUMINANCE16:
-        case GL_COMPRESSED_LUMINANCE:
-        {
-            if(!format)
-            {
-                format = GL_LUMINANCE;
-            }
-            break;
-        }
-        case GL_LUMINANCE8_ALPHA8:
-        case GL_LUMINANCE16_ALPHA16:
-        case GL_COMPRESSED_LUMINANCE_ALPHA:
-        {
-            if(!format)
-            {
-                format = GL_LUMINANCE_ALPHA;
-            }
-            break;
-        }
-        case GL_ALPHA8:
-        case GL_ALPHA16:
-        case GL_COMPRESSED_ALPHA:
-        {
-            if(!format)
-            {
-                format = GL_ALPHA;
-            }
-            break;
-        }
         case GL_RGB8UI:
         case GL_RGB16UI:
         case GL_RGB32UI:
@@ -827,7 +728,7 @@ void createtexture(int tnum, int w, int h, const void *pixels, int clamp, int fi
     uploadtexture(subtarget, component, tw, th, format, type, pixels, pw, ph, pitch, mipmap);
 }
 
-void createcompressedtexture(int tnum, int w, int h, const uchar *data, int align, int blocksize, int levels, int clamp, int filter, GLenum format, GLenum subtarget, bool swizzle = false)
+static void createcompressedtexture(int tnum, int w, int h, const uchar *data, int align, int blocksize, int levels, int clamp, int filter, GLenum format, GLenum subtarget, bool swizzle = false)
 {
     GLenum target = textarget(subtarget);
     if(tnum)
@@ -844,11 +745,10 @@ void create3dtexture(int tnum, int w, int h, int d, const void *pixels, int clam
     {
         setuptexparameters(tnum, pixels, clamp, filter, format, target, swizzle);
     }
-    glTexImage3D_(target, 0, component, w, h, d, 0, format, type, pixels);
+    glTexImage3D(target, 0, component, w, h, d, 0, format, type, pixels);
 }
 
-
-hashnameset<Texture> textures;
+std::unordered_map<std::string, Texture> textures;
 
 Texture *notexture = nullptr; // used as default, ensured to be loaded
 
@@ -883,8 +783,6 @@ static bool alphaformat(GLenum format)
 {
     switch(format)
     {
-        case GL_ALPHA:
-        case GL_LUMINANCE_ALPHA:
         case GL_RG:
         case GL_RGBA:
         {
@@ -925,7 +823,8 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
     if(!t)
     {
         char *key = newstring(rname);
-        t = &textures[key];
+        auto itr = textures.insert_or_assign(key, Texture()).first;
+        t = &(*itr).second;
         t->name = key;
     }
 
@@ -957,7 +856,6 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
     }
     t->w = t->xs = s.w;
     t->h = t->ys = s.h;
-    t->ratio = t->w / static_cast<float>(t->h);
     int filter = !canreduce || reducefilter ? (mipit ? 2 : 1) : 0;
     glGenTextures(1, &t->id);
     if(s.compressed)
@@ -1095,24 +993,24 @@ SDL_Surface *loadsurface(const char *name)
     return fixsurfaceformat(s);
 }
 
-uchar *loadalphamask(Texture *t)
+const uchar * Texture::loadalphamask()
 {
-    if(t->alphamask)
+    if(alphamask)
     {
-        return t->alphamask;
+        return alphamask;
     }
-    if(!(t->type&Texture::ALPHA))
+    if(!(type&Texture::ALPHA))
     {
         return nullptr;
     }
     ImageData s;
-    if(!s.texturedata(t->name, false) || !s.data || s.compressed)
+    if(!s.texturedata(name, false) || !s.data || s.compressed)
     {
         return nullptr;
     }
-    t->alphamask = new uchar[s.h * ((s.w+7)/8)];
+    alphamask = new uchar[s.h * ((s.w+7)/8)];
     uchar *srcrow = s.data,
-          *dst = t->alphamask-1;
+          *dst = alphamask-1;
     for(int y = 0; y < s.h; ++y)
     {
         uchar *src = srcrow+s.bpp-1;
@@ -1131,23 +1029,27 @@ uchar *loadalphamask(Texture *t)
         }
         srcrow += s.pitch;
     }
-    return t->alphamask;
+    return alphamask;
+}
+
+float Texture::ratio() const
+{
+    return (w / static_cast<float>(h));
 }
 
 Texture *textureload(const char *name, int clamp, bool mipit, bool msg)
 {
-    string tname;
-    copystring(tname, name);
-    Texture *t = textures.access(path(tname));
-    if(t)
+    std::string tname(name);
+    auto itr = textures.find(path(tname));
+    if(itr != textures.end())
     {
-        return t;
+        return &(*itr).second;
     }
     int compress = 0;
     ImageData s;
-    if(s.texturedata(tname, msg, &compress, &clamp))
+    if(s.texturedata(tname.c_str(), msg, &compress, &clamp))
     {
-        return newtexture(nullptr, tname, s, clamp, mipit, false, false, compress);
+        return newtexture(nullptr, tname.c_str(), s, clamp, mipit, false, false, compress);
     }
     return notexture;
 }
@@ -1159,12 +1061,12 @@ bool settexture(const char *name, int clamp)
     return t != notexture;
 }
 
-vector<VSlot *> vslots;
-vector<Slot *> slots;
+std::vector<VSlot *> vslots;
+std::vector<Slot *> slots;
 MatSlot materialslots[(MatFlag_Volume|MatFlag_Index)+1];
 Slot dummyslot;
 VSlot dummyvslot(&dummyslot);
-vector<DecalSlot *> decalslots;
+static std::vector<DecalSlot *> decalslots;
 DecalSlot dummydecalslot;
 Slot *defslot = nullptr;
 
@@ -1192,8 +1094,8 @@ void texturereset(int *n)
     }
     defslot = nullptr;
     resetslotshader();
-    int limit = std::clamp(*n, 0, slots.length());
-    for(int i = limit; i < slots.length(); i++)
+    int limit = std::clamp(*n, 0, static_cast<int>(slots.size()));
+    for(size_t i = limit; i < slots.size(); i++)
     {
         Slot *s = slots[i];
         for(VSlot *vs = s->variants; vs; vs = vs->next)
@@ -1202,19 +1104,18 @@ void texturereset(int *n)
         }
         delete s;
     }
-    slots.setsize(limit);
-    while(vslots.length())
+    slots.resize(limit);
+    while(vslots.size())
     {
-        VSlot *vs = vslots.last();
+        VSlot *vs = vslots.back();
         if(vs->slot != &dummyslot || vs->changed)
         {
             break;
         }
-        delete vslots.pop();
+        delete vslots.back();
+        vslots.pop_back();
     }
 }
-
-COMMAND(texturereset, "i");
 
 void materialreset()
 {
@@ -1229,9 +1130,7 @@ void materialreset()
     }
 }
 
-COMMAND(materialreset, "");
-
-void decalreset(int *n)
+void decalreset(const int *n)
 {
     if(!(identflags&Idf_Overridden) && !allowediting)
     {
@@ -1239,10 +1138,12 @@ void decalreset(int *n)
     }
     defslot = nullptr;
     resetslotshader();
-    decalslots.deletecontents(*n);
+    for(uint i = *n; i < decalslots.size(); ++i)
+    {
+        delete decalslots.at(i);
+    }
+    decalslots.resize(*n);
 }
-
-COMMAND(decalreset, "i");
 
 static int compactedvslots = 0,
            compactvslotsprogress = 0,
@@ -1253,13 +1154,21 @@ void clearslots()
 {
     defslot = nullptr;
     resetslotshader();
-    slots.deletecontents();
-    vslots.deletecontents();
+    for(Slot * i : slots)
+    {
+        delete i;
+    }
+    slots.clear();
+    for(VSlot * i : vslots)
+    {
+        delete i;
+    }
+    vslots.clear();
     for(int i = 0; i < (MatFlag_Volume|MatFlag_Index)+1; ++i)
     {
         materialslots[i].reset();
     }
-    decalslots.deletecontents();
+    decalslots.clear();
     clonedvslots = 0;
 }
 
@@ -1270,7 +1179,7 @@ static void assignvslot(VSlot &vs)
 
 void compactvslot(int &index)
 {
-    if(vslots.inrange(index))
+    if(static_cast<long>(vslots.size()) > index)
     {
         VSlot &vs = *vslots[index];
         if(vs.index < 0)
@@ -1292,23 +1201,24 @@ void compactvslot(VSlot &vs)
     }
 }
 
-void compactvslots(cube *c, int n)
+//n will be capped at 8
+void compactvslots(cube * const c, int n)
 {
     if((compactvslotsprogress++&0xFFF)==0)
     {
         renderprogress(std::min(static_cast<float>(compactvslotsprogress)/allocnodes, 1.0f), markingvslots ? "marking slots..." : "compacting slots...");
     }
-    for(int i = 0; i < n; ++i)
+    for(int i = 0; i < std::min(n, 8); ++i)
     {
         if(c[i].children)
         {
-            compactvslots(c[i].children);
+            compactvslots(c[i].children->data());
         }
         else
         {
             for(int j = 0; j < 6; ++j)
             {
-                if(vslots.inrange(c[i].texture[j]))
+                if(vslots.size() > c[i].texture[j])
                 {
                     VSlot &vs = *vslots[c[i].texture[j]];
                     if(vs.index < 0)
@@ -1327,58 +1237,61 @@ void compactvslots(cube *c, int n)
 
 int cubeworld::compactvslots(bool cull)
 {
+    if(!worldroot)
+    {
+        conoutf(Console_Error, "no cube to compact");
+        return 0;
+    }
     defslot = nullptr;
     clonedvslots = 0;
     markingvslots = cull;
     compactedvslots = 0;
     compactvslotsprogress = 0;
-    for(int i = 0; i < vslots.length(); i++)
+    for(uint i = 0; i < vslots.size(); i++)
     {
         vslots[i]->index = -1;
     }
     if(cull)
     {
-        int numdefaults = std::min(static_cast<int>(Default_NumDefaults), slots.length());
-        for(int i = 0; i < numdefaults; ++i)
+        uint numdefaults = std::min(static_cast<uint>(Default_NumDefaults), static_cast<uint>(slots.size()));
+        for(uint i = 0; i < numdefaults; ++i)
         {
             slots[i]->variants->index = compactedvslots++;
         }
     }
     else
     {
-        for(int i = 0; i < slots.length(); i++)
+        for(const Slot *i : slots)
         {
-            slots[i]->variants->index = compactedvslots++;
+            i->variants->index = compactedvslots++;
         }
-        for(int i = 0; i < vslots.length(); i++)
+        for(const VSlot *i : vslots)
         {
-            VSlot &vs = *vslots[i];
-            if(!vs.changed && vs.index < 0)
+            if(!i->changed && i->index < 0)
             {
                 markingvslots = true;
                 break;
             }
         }
     }
-    compactvslots(worldroot);
+    ::compactvslots(worldroot->data());
     int total = compactedvslots;
     compacteditvslots();
-    for(int i = 0; i < vslots.length(); i++)
+    for(VSlot *i : vslots)
     {
-        VSlot *vs = vslots[i];
-        if(vs->changed)
+        if(i->changed)
         {
             continue;
         }
-        while(vs->next)
+        while(i->next)
         {
-            if(vs->next->index < 0)
+            if(i->next->index < 0)
             {
-                vs->next = vs->next->next;
+                i->next = i->next->next;
             }
             else
             {
-                vs = vs->next;
+                i = i->next;
             }
         }
     }
@@ -1388,7 +1301,7 @@ int cubeworld::compactvslots(bool cull)
         compactedvslots = 0;
         compactvslotsprogress = 0;
         int lastdiscard = 0;
-        for(int i = 0; i < vslots.length(); i++)
+        for(uint i = 0; i < vslots.size(); i++)
         {
             VSlot &vs = *vslots[i];
             if(vs.changed || (vs.index < 0 && !vs.next))
@@ -1399,7 +1312,7 @@ int cubeworld::compactvslots(bool cull)
             {
                 if(!cull)
                 {
-                    while(lastdiscard < i)
+                    while(lastdiscard < static_cast<int>(i))
                     {
                         VSlot &ds = *vslots[lastdiscard++];
                         if(!ds.changed && ds.index < 0)
@@ -1411,47 +1324,40 @@ int cubeworld::compactvslots(bool cull)
                 vs.index = compactedvslots++;
             }
         }
-        compactvslots(worldroot);
+        ::compactvslots(worldroot->data());
         total = compactedvslots;
         compacteditvslots();
     }
     compactmruvslots();
     if(cull)
     {
-        for(int i = slots.length(); --i >=0;) //note reverse iteration
+        for(int i = static_cast<int>(slots.size()); --i >=0;) //note reverse iteration
         {
             if(slots[i]->variants->index < 0)
             {
-                delete slots.remove(i);
+                delete slots.at(i);
+                slots.erase(slots.begin() + i);
             }
         }
-        for(int i = 0; i < slots.length(); i++)
+        for(uint i = 0; i < slots.size(); i++)
         {
             slots[i]->index = i;
         }
     }
-    for(int i = 0; i < vslots.length(); i++)
+    for(uint i = 0; i < vslots.size(); i++)
     {
-        while(vslots[i]->index >= 0 && vslots[i]->index != i)
+        while(vslots[i]->index >= 0 && vslots[i]->index != static_cast<int>(i))
         {
             std::swap(vslots[i], vslots[vslots[i]->index]);
         }
     }
-    for(int i = compactedvslots; i < vslots.length(); i++)
+    for(uint i = compactedvslots; i < vslots.size(); i++)
     {
         delete vslots[i];
     }
-    vslots.setsize(compactedvslots);
+    vslots.resize(compactedvslots);
     return total;
 }
-
-void compactvslotscmd(int *cull)
-{
-    multiplayerwarn();
-    rootworld.compactvslots(*cull!=0);
-    rootworld.allchanged();
-}
-COMMANDN(compactvslots, compactvslotscmd, "i");
 
 static void clampvslotoffset(VSlot &dst, Slot *slot = nullptr)
 {
@@ -1459,7 +1365,7 @@ static void clampvslotoffset(VSlot &dst, Slot *slot = nullptr)
     {
         slot = dst.slot;
     }
-    if(slot && slot->sts.inrange(0))
+    if(slot && slot->sts.size())
     {
         if(!slot->loaded)
         {
@@ -1498,9 +1404,9 @@ static void propagatevslot(VSlot &dst, const VSlot &src, int diff, bool edit = f
 {
     if(diff & (1 << VSlot_ShParam))
     {
-        for(int i = 0; i < src.params.length(); i++)
+        for(uint i = 0; i < src.params.size(); i++)
         {
-            dst.params.add(src.params[i]);
+            dst.params.push_back(src.params[i]);
         }
     }
     if(diff & (1 << VSlot_Scale))
@@ -1547,7 +1453,7 @@ static void propagatevslot(VSlot &dst, const VSlot &src, int diff, bool edit = f
     }
 }
 
-static void propagatevslot(VSlot *root, int changed)
+static void propagatevslot(const VSlot *root, int changed)
 {
     for(VSlot *vs = root->next; vs; vs = vs->next)
     {
@@ -1563,19 +1469,19 @@ static void mergevslot(VSlot &dst, const VSlot &src, int diff, Slot *slot = null
 {
     if(diff & (1 << VSlot_ShParam))
     {
-        for(int i = 0; i < src.params.length(); i++)
+        for(uint i = 0; i < src.params.size(); i++)
         {
             const SlotShaderParam &sp = src.params[i];
-            for(int j = 0; j < dst.params.length(); j++)
+            for(uint j = 0; j < dst.params.size(); j++)
             {
                 SlotShaderParam &dp = dst.params[j];
                 if(sp.name == dp.name)
                 {
-                    memcpy(dp.val, sp.val, sizeof(dp.val));
+                    std::memcpy(dp.val, sp.val, sizeof(dp.val));
                     goto nextparam; //bail out of loop
                 }
             }
-            dst.params.add(sp);
+            dst.params.push_back(sp);
         nextparam:;
         }
     }
@@ -1643,7 +1549,7 @@ static VSlot *reassignvslot(Slot &owner, VSlot *vs)
 static VSlot *emptyvslot(Slot &owner)
 {
     int offset = 0;
-    for(int i = slots.length(); --i >=0;) //note reverse iteration
+    for(int i = static_cast<int>(slots.size()); --i >=0;) //note reverse iteration
     {
         if(slots[i]->variants)
         {
@@ -1651,28 +1557,29 @@ static VSlot *emptyvslot(Slot &owner)
             break;
         }
     }
-    for(int i = offset; i < vslots.length(); i++)
+    for(uint i = offset; i < vslots.size(); i++)
     {
         if(!vslots[i]->changed)
         {
             return reassignvslot(owner, vslots[i]);
         }
     }
-    return vslots.add(new VSlot(&owner, vslots.length()));
+    vslots.push_back(new VSlot(&owner, vslots.size()));
+    return vslots.back();
 }
 
 static bool comparevslot(const VSlot &dst, const VSlot &src, int diff)
 {
     if(diff & (1 << VSlot_ShParam))
     {
-        if(src.params.length() != dst.params.length())
+        if(src.params.size() != dst.params.size())
         {
             return false;
         }
-        for(int i = 0; i < src.params.length(); i++)
+        for(uint i = 0; i < src.params.size(); i++)
         {
             const SlotShaderParam &sp = src.params[i], &dp = dst.params[i];
-            if(sp.name != dp.name || memcmp(sp.val, dp.val, sizeof(sp.val)))
+            if(sp.name != dp.name || std::memcmp(sp.val, dp.val, sizeof(sp.val)))
             {
                 return false;
             }
@@ -1689,14 +1596,14 @@ static bool comparevslot(const VSlot &dst, const VSlot &src, int diff)
     return true;
 }
 
-void packvslot(vector<uchar> &buf, const VSlot &src)
+void packvslot(std::vector<uchar> &buf, const VSlot &src)
 {
     if(src.changed & (1 << VSlot_ShParam))
     {
-        for(int i = 0; i < src.params.length(); i++)
+        for(uint i = 0; i < src.params.size(); i++)
         {
             const SlotShaderParam &p = src.params[i];
-            buf.put(VSlot_ShParam);
+            buf.push_back(VSlot_ShParam);
             sendstring(p.name, buf);
             for(int j = 0; j < 4; ++j)
             {
@@ -1706,70 +1613,72 @@ void packvslot(vector<uchar> &buf, const VSlot &src)
     }
     if(src.changed & (1 << VSlot_Scale))
     {
-        buf.put(VSlot_Scale);
+        buf.push_back(VSlot_Scale);
         putfloat(buf, src.scale);
     }
     if(src.changed & (1 << VSlot_Rotation))
     {
-        buf.put(VSlot_Rotation);
+        buf.push_back(VSlot_Rotation);
         putint(buf, src.rotation);
     }
     if(src.changed & (1 << VSlot_Angle))
     {
-        buf.put(VSlot_Angle);
+        buf.push_back(VSlot_Angle);
         putfloat(buf, src.angle.x);
         putfloat(buf, src.angle.y);
         putfloat(buf, src.angle.z);
     }
     if(src.changed & (1 << VSlot_Offset))
     {
-        buf.put(VSlot_Offset);
+        buf.push_back(VSlot_Offset);
         putint(buf, src.offset.x);
         putint(buf, src.offset.y);
     }
     if(src.changed & (1 << VSlot_Scroll))
     {
-        buf.put(VSlot_Scroll);
+        buf.push_back(VSlot_Scroll);
         putfloat(buf, src.scroll.x);
         putfloat(buf, src.scroll.y);
     }
     if(src.changed & (1 << VSlot_Alpha))
     {
-        buf.put(VSlot_Alpha);
+        buf.push_back(VSlot_Alpha);
         putfloat(buf, src.alphafront);
         putfloat(buf, src.alphaback);
     }
     if(src.changed & (1 << VSlot_Color))
     {
-        buf.put(VSlot_Color);
+        buf.push_back(VSlot_Color);
         putfloat(buf, src.colorscale.r);
         putfloat(buf, src.colorscale.g);
         putfloat(buf, src.colorscale.b);
     }
     if(src.changed & (1 << VSlot_Refract))
     {
-        buf.put(VSlot_Refract);
+        buf.push_back(VSlot_Refract);
         putfloat(buf, src.refractscale);
         putfloat(buf, src.refractcolor.r);
         putfloat(buf, src.refractcolor.g);
         putfloat(buf, src.refractcolor.b);
     }
-    buf.put(0xFF);
+    buf.push_back(0xFF);
 }
 
-void packvslot(vector<uchar> &buf, int index)
+//used in iengine.h
+void packvslot(std::vector<uchar> &buf, int index)
 {
-    if(vslots.inrange(index))
+    if(static_cast<long>(vslots.size()) > index)
     {
         packvslot(buf, *vslots[index]);
     }
     else
     {
-        buf.put(0xFF);
+        buf.push_back(0xFF);
     }
 }
 
-void packvslot(vector<uchar> &buf, const VSlot *vs)
+//used in iengine.h
+void packvslot(std::vector<uchar> &buf, const VSlot *vs)
 {
     if(vs)
     {
@@ -1777,7 +1686,7 @@ void packvslot(vector<uchar> &buf, const VSlot *vs)
     }
     else
     {
-        buf.put(0xFF);
+        buf.push_back(0xFF);
     }
 }
 
@@ -1796,14 +1705,14 @@ bool unpackvslot(ucharbuf &buf, VSlot &dst, bool delta)
             {
                 string name;
                 getstring(name, buf);
-                SlotShaderParam p = { name[0] ? getshaderparamname(name) : nullptr, -1, 0, { 0, 0, 0, 0 } };
+                SlotShaderParam p = { name[0] ? getshaderparamname(name) : nullptr, SIZE_MAX, 0, { 0, 0, 0, 0 } };
                 for(int i = 0; i < 4; ++i)
                 {
                     p.val[i] = getfloat(buf);
                 }
                 if(p.name)
                 {
-                    dst.params.add(p);
+                    dst.params.push_back(p);
                 }
                 break;
             }
@@ -1885,7 +1794,7 @@ bool unpackvslot(ucharbuf &buf, VSlot &dst, bool delta)
     return true;
 }
 
-VSlot *findvslot(Slot &slot, const VSlot &src, const VSlot &delta)
+VSlot *findvslot(const Slot &slot, const VSlot &src, const VSlot &delta)
 {
     for(VSlot *dst = slot.variants; dst; dst = dst->next)
     {
@@ -1901,7 +1810,8 @@ VSlot *findvslot(Slot &slot, const VSlot &src, const VSlot &delta)
 
 static VSlot *clonevslot(const VSlot &src, const VSlot &delta)
 {
-    VSlot *dst = vslots.add(new VSlot(src.slot, vslots.length()));
+    vslots.push_back(new VSlot(src.slot, vslots.size()));
+    VSlot *dst = vslots.back();
     dst->changed = src.changed | delta.changed;
     propagatevslot(*dst, src, ((1 << VSlot_Num) - 1) & ~delta.changed);
     propagatevslot(*dst, delta, delta.changed, true);
@@ -1917,11 +1827,11 @@ VSlot *editvslot(const VSlot &src, const VSlot &delta)
     {
         return exists;
     }
-    if(vslots.length()>=0x10000)
+    if(vslots.size()>=0x10000)
     {
         ::rootworld.compactvslots();
         rootworld.allchanged();
-        if(vslots.length()>=0x10000)
+        if(vslots.size()>=0x10000)
         {
             return nullptr;
         }
@@ -1934,14 +1844,14 @@ VSlot *editvslot(const VSlot &src, const VSlot &delta)
     return clonevslot(src, delta);
 }
 
-static void fixinsidefaces(cube *c, const ivec &o, int size, int tex)
+static void fixinsidefaces(std::array<cube, 8> &c, const ivec &o, int size, int tex)
 {
     for(int i = 0; i < 8; ++i)
     {
         ivec co(i, o, size);
         if(c[i].children)
         {
-            fixinsidefaces(c[i].children, co, size>>1, tex);
+            fixinsidefaces(*(c[i].children), co, size>>1, tex);
         }
         else
         {
@@ -1956,26 +1866,27 @@ static void fixinsidefaces(cube *c, const ivec &o, int size, int tex)
     }
 }
 
-const struct slottex
-{
-    const char *name;
-    int id;
-} slottexs[] =
-{
-    {"0", Tex_Diffuse},
-    {"1", Tex_Unknown},
-
-    {"c", Tex_Diffuse},
-    {"u", Tex_Unknown},
-    {"n", Tex_Normal},
-    {"g", Tex_Glow},
-    {"s", Tex_Spec},
-    {"z", Tex_Depth},
-    {"a", Tex_Alpha}
-};
-
 int findslottex(const char *name)
 {
+
+    const struct slottex
+    {
+        const char *name;
+        int id;
+    } slottexs[] =
+    {
+        {"0", Tex_Diffuse},
+        {"1", Tex_Unknown},
+
+        {"c", Tex_Diffuse},
+        {"u", Tex_Unknown},
+        {"n", Tex_Normal},
+        {"g", Tex_Glow},
+        {"s", Tex_Spec},
+        {"z", Tex_Depth},
+        {"a", Tex_Alpha}
+    };
+
     for(int i = 0; i < static_cast<int>(sizeof(slottexs)/sizeof(slottex)); ++i)
     {
         if(!std::strcmp(slottexs[i].name, name))
@@ -1991,20 +1902,22 @@ static void texture(char *type, char *name, int *rot, int *xoffset, int *yoffset
     int tnum = findslottex(type), matslot;
     if(tnum == Tex_Diffuse)
     {
-        if(slots.length() >= 0x10000)
+        if(slots.size() >= 0x10000)
         {
             return;
         }
-        defslot = slots.add(new Slot(slots.length()));
+        slots.push_back(new Slot(slots.size()));
+        defslot = slots.back();
     }
     else if(!std::strcmp(type, "decal"))
     {
-        if(decalslots.length() >= 0x10000)
+        if(decalslots.size() >= 0x10000)
         {
             return;
         }
         tnum = Tex_Diffuse;
-        defslot = decalslots.add(new DecalSlot(decalslots.length()));
+        decalslots.push_back(new DecalSlot(decalslots.size()));
+        defslot = decalslots.back();
     }
     else if((matslot = findmaterial(type)) >= 0)
     {
@@ -2023,11 +1936,12 @@ static void texture(char *type, char *name, int *rot, int *xoffset, int *yoffset
     Slot &s = *defslot;
     s.loaded = false;
     s.texmask |= 1<<tnum;
-    if(s.sts.length()>=8)
+    if(s.sts.size()>=8)
     {
         conoutf(Console_Warn, "warning: too many textures in %s", s.name());
     }
-    Slot::Tex &st = s.sts.add();
+    s.sts.emplace_back();
+    Slot::Tex &st = s.sts.back();
     st.type = tnum;
     copystring(st.name, name);
     path(st.name);
@@ -2041,7 +1955,6 @@ static void texture(char *type, char *name, int *rot, int *xoffset, int *yoffset
         propagatevslot(&vs, (1 << VSlot_Num) - 1);
     }
 }
-COMMAND(texture, "ssiiif");
 
 void texgrass(char *name)
 {
@@ -2053,7 +1966,6 @@ void texgrass(char *name)
     delete[] s.grass;
     s.grass = name[0] ? newstring(makerelpath("media/texture", name)) : nullptr;
 }
-COMMAND(texgrass, "s");
 
 void texscroll(float *scrollS, float *scrollT)
 {
@@ -2065,7 +1977,6 @@ void texscroll(float *scrollS, float *scrollT)
     s.variants->scroll = vec2(*scrollS/1000.0f, *scrollT/1000.0f);
     propagatevslot(s.variants, 1 << VSlot_Scroll);
 }
-COMMAND(texscroll, "ff");
 
 void texoffset_(int *xoffset, int *yoffset)
 {
@@ -2077,7 +1988,6 @@ void texoffset_(int *xoffset, int *yoffset)
     s.variants->offset = ivec2(*xoffset, *yoffset).max(0);
     propagatevslot(s.variants, 1 << VSlot_Offset);
 }
-COMMANDN(texoffset, texoffset_, "ii");
 
 void texrotate_(int *rot)
 {
@@ -2089,8 +1999,6 @@ void texrotate_(int *rot)
     s.variants->rotation = std::clamp(*rot, 0, 7);
     propagatevslot(s.variants, 1 << VSlot_Rotation);
 }
-COMMANDN(texrotate, texrotate_, "i");
-
 
 void texangle_(float *a)
 {
@@ -2099,11 +2007,9 @@ void texangle_(float *a)
         return;
     }
     Slot &s = *defslot;
-    s.variants->angle = vec(*a, std::sin(RAD**a), std::cos(RAD**a));
+    s.variants->angle = vec(*a, std::sin(*a/RAD), std::cos(*a/RAD));
     propagatevslot(s.variants, 1 << VSlot_Angle);
 }
-COMMANDN(texangle, texangle_, "f");
-
 
 void texscale(float *scale)
 {
@@ -2115,7 +2021,6 @@ void texscale(float *scale)
     s.variants->scale = *scale <= 0 ? 1 : *scale;
     propagatevslot(s.variants, 1 << VSlot_Scale);
 }
-COMMAND(texscale, "f");
 
 void texalpha(float *front, float *back)
 {
@@ -2128,7 +2033,6 @@ void texalpha(float *front, float *back)
     s.variants->alphaback = std::clamp(*back, 0.0f, 1.0f);
     propagatevslot(s.variants, 1 << VSlot_Alpha);
 }
-COMMAND(texalpha, "ff");
 
 void texcolor(float *r, float *g, float *b)
 {
@@ -2140,7 +2044,6 @@ void texcolor(float *r, float *g, float *b)
     s.variants->colorscale = vec(std::clamp(*r, 0.0f, 2.0f), std::clamp(*g, 0.0f, 2.0f), std::clamp(*b, 0.0f, 2.0f));
     propagatevslot(s.variants, 1 << VSlot_Color);
 }
-COMMAND(texcolor, "fff");
 
 void texrefract(float *k, float *r, float *g, float *b)
 {
@@ -2160,7 +2063,6 @@ void texrefract(float *k, float *r, float *g, float *b)
     }
     propagatevslot(s.variants, 1 << VSlot_Refract);
 }
-COMMAND(texrefract, "ffff");
 
 void texsmooth(int *id, int *angle)
 {
@@ -2171,7 +2073,6 @@ void texsmooth(int *id, int *angle)
     Slot &s = *defslot;
     s.smooth = smoothangle(*id, *angle);
 }
-COMMAND(texsmooth, "ib");
 
 void decaldepth(float *depth, float *fade)
 {
@@ -2183,7 +2084,6 @@ void decaldepth(float *depth, float *fade)
     s.depth = std::clamp(*depth, 1e-3f, 1e3f);
     s.fade = std::clamp(*fade, 0.0f, s.depth);
 }
-COMMAND(decaldepth, "ff");
 
 int DecalSlot::cancombine(int type) const
 {
@@ -2219,21 +2119,21 @@ bool DecalSlot::shouldpremul(int type) const
     }
 }
 
-static void addname(vector<char> &key, Slot &slot, Slot::Tex &t, bool combined = false, const char *prefix = nullptr)
+static void addname(std::vector<char> &key, Slot &slot, Slot::Tex &t, bool combined = false, const char *prefix = nullptr)
 {
     if(combined)
     {
-        key.add('&');
+        key.push_back('&');
     }
     if(prefix)
     {
         while(*prefix)
         {
-            key.add(*prefix++);
+            key.push_back(*prefix++);
         }
     }
     DEF_FORMAT_STRING(tname, "%s/%s", slot.texturedir(), t.name);
-    for(const char *s = path(tname); *s; key.add(*s++))
+    for(const char *s = path(tname); *s; key.push_back(*s++))
     {
         //(empty body)
     }
@@ -2248,7 +2148,7 @@ VSlot &Slot::emptyvslot()
 
 int Slot::findtextype(int type, int last) const
 {
-    for(int i = last+1; i<sts.length(); i++)
+    for(uint i = last+1; i<sts.size(); i++)
     {
         if((type&(1<<sts[i].type)) && sts[i].combined<0)
         {
@@ -2279,10 +2179,10 @@ int Slot::cancombine(int type) const
 
 void Slot::load(int index, Slot::Tex &t)
 {
-    vector<char> key;
+    std::vector<char> key;
     addname(key, *this, t, false, shouldpremul(t.type) ? "<premul>" : nullptr);
     Slot::Tex *combine = nullptr;
-    for(int i = 0; i < sts.length(); i++)
+    for(uint i = 0; i < sts.size(); i++)
     {
         Slot::Tex &c = sts[i];
         if(c.combined == index)
@@ -2292,12 +2192,14 @@ void Slot::load(int index, Slot::Tex &t)
             break;
         }
     }
-    key.add('\0');
-    t.t = textures.access(key.getbuf());
-    if(t.t)
+    key.push_back('\0');
+    auto itr = textures.find(key.data());
+    if(itr != textures.end())
     {
+        t.t = &(*itr).second;
         return;
     }
+    t.t = nullptr;
     int compress = 0,
         wrap = 0;
     ImageData ts;
@@ -2361,13 +2263,13 @@ void Slot::load(int index, Slot::Tex &t)
     {
         ts.texpremul();
     }
-    t.t = newtexture(nullptr, key.getbuf(), ts, wrap, true, true, true, compress);
+    t.t = newtexture(nullptr, key.data(), ts, wrap, true, true, true, compress);
 }
 
 void Slot::load()
 {
     linkslotshader(*this);
-    for(int i = 0; i < sts.length(); i++)
+    for(uint i = 0; i < sts.size(); i++)
     {
         Slot::Tex &t = sts[i];
         if(t.combined >= 0)
@@ -2381,7 +2283,7 @@ void Slot::load()
             c.combined = i;
         }
     }
-    for(int i = 0; i < sts.length(); i++)
+    for(uint i = 0; i < sts.size(); i++)
     {
         Slot::Tex &t = sts[i];
         if(t.combined >= 0)
@@ -2400,8 +2302,31 @@ void Slot::load()
     loaded = true;
 }
 
-// end of Slot
+// VSlot
 
+void VSlot::addvariant(Slot *slot)
+{
+    if(!slot->variants)
+    {
+        slot->variants = this;
+    }
+    else
+    {
+        VSlot *prev = slot->variants;
+        while(prev->next)
+        {
+            prev = prev->next;
+        }
+        prev->next = this;
+    }
+}
+
+bool VSlot::isdynamic() const
+{
+    return !scroll.iszero() || slot->shader->isdynamic();
+}
+
+// end of Slot/VSlot
 MatSlot &lookupmaterialslot(int index, bool load)
 {
     MatSlot &s = materialslots[index];
@@ -2419,7 +2344,7 @@ MatSlot &lookupmaterialslot(int index, bool load)
 
 Slot &lookupslot(int index, bool load)
 {
-    Slot &s = slots.inrange(index) ? *slots[index] : (slots.inrange(Default_Geom) ? *slots[Default_Geom] : dummyslot);
+    Slot &s = (static_cast<long>(slots.size()) > index) ? *slots[index] : ((slots.size() > Default_Geom) ? *slots[Default_Geom] : dummyslot);
     if(!s.loaded && load)
     {
         s.load();
@@ -2429,7 +2354,7 @@ Slot &lookupslot(int index, bool load)
 
 VSlot &lookupvslot(int index, bool load)
 {
-    VSlot &s = vslots.inrange(index) && vslots[index]->slot ? *vslots[index] : (slots.inrange(Default_Geom) && slots[Default_Geom]->variants ? *slots[Default_Geom]->variants : dummyvslot);
+    VSlot &s = (static_cast<long>(vslots.size()) > index) && vslots[index]->slot ? *vslots[index] : ((slots.size() > Default_Geom) && slots[Default_Geom]->variants ? *slots[Default_Geom]->variants : dummyvslot);
     if(load && !s.linked)
     {
         if(!s.slot->loaded)
@@ -2444,7 +2369,7 @@ VSlot &lookupvslot(int index, bool load)
 
 DecalSlot &lookupdecalslot(int index, bool load)
 {
-    DecalSlot &s = decalslots.inrange(index) ? *decalslots[index] : dummydecalslot;
+    DecalSlot &s = (static_cast<int>(decalslots.size()) > index) ? *decalslots[index] : dummydecalslot;
     if(load && !s.linked)
     {
         if(!s.loaded)
@@ -2459,21 +2384,21 @@ DecalSlot &lookupdecalslot(int index, bool load)
 
 void linkslotshaders()
 {
-    for(int i = 0; i < slots.length(); i++)
+    for(Slot * const &i : slots)
     {
-        if(slots[i]->loaded)
+        if(i->loaded)
         {
-            linkslotshader(*slots[i]);
+            linkslotshader(*i);
         }
     }
-    for(int i = 0; i < vslots.length(); i++)
+    for(VSlot * const &i : vslots)
     {
-        if(vslots[i]->linked)
+        if(i->linked)
         {
-            linkvslotshader(*vslots[i]);
+            linkvslotshader(*i);
         }
     }
-    for(int i = 0; i < (MatFlag_Volume|MatFlag_Index)+1; ++i)
+    for(uint i = 0; i < (MatFlag_Volume|MatFlag_Index)+1; ++i)
     {
         if(materialslots[i].loaded)
         {
@@ -2481,12 +2406,12 @@ void linkslotshaders()
             linkvslotshader(materialslots[i]);
         }
     }
-    for(int i = 0; i < decalslots.length(); i++)
+    for(DecalSlot * const &i : decalslots)
     {
-        if(decalslots[i]->loaded)
+        if(i->loaded)
         {
-            linkslotshader(*decalslots[i]);
-            linkvslotshader(*decalslots[i]);
+            linkslotshader(*i);
+            linkvslotshader(*i);
         }
     }
 }
@@ -2525,7 +2450,7 @@ Texture *Slot::loadthumbnail()
     VSlot &vslot = *variants;
     linkslotshader(*this, false);
     linkvslotshader(vslot, false);
-    vector<char> name;
+    std::vector<char> name;
     if(vslot.colorscale == vec(1, 1, 1))
     {
         addname(name, *this, sts[0], false, "<thumbnail>");
@@ -2538,7 +2463,7 @@ Texture *Slot::loadthumbnail()
     int glow = -1;
     if(texmask&(1 << Tex_Glow))
     {
-        for(int j = 0; j < sts.length(); j++)
+        for(uint j = 0; j < sts.size(); j++)
         {
             if(sts[j].type == Tex_Glow)
             {
@@ -2552,14 +2477,17 @@ Texture *Slot::loadthumbnail()
             addname(name, *this, sts[glow], true, prefix);
         }
     }
-    name.add('\0');
-    Texture *t = textures.access(path(name.getbuf()));
-    if(t)
+    name.push_back('\0');
+    auto itr = textures.find(path(name.data()));
+    if(itr != textures.end())
     {
-        thumbnail = t;
+        thumbnail = &(*itr).second;
+        return &(*itr).second;
     }
     else
     {
+        auto insert = textures.insert( { std::string(name.data()), Texture() } ).first;
+        Texture *t = &(*insert).second;
         ImageData s, g, l, d;
         s.texturedata(*this, sts[0], false);
         if(glow >= 0)
@@ -2610,86 +2538,75 @@ Texture *Slot::loadthumbnail()
             {
                 s.forcergbimage();
             }
-            t = newtexture(nullptr, name.getbuf(), s, 0, false, false, true);
+            t = newtexture(nullptr, name.data(), s, 0, false, false, true);
             t->xs = xs;
             t->ys = ys;
             thumbnail = t;
         }
+        return t;
     }
-    return t;
 }
 
 // environment mapped reflections
 
-extern const cubemapside cubemapsides[6] =
-{
-    { GL_TEXTURE_CUBE_MAP_NEGATIVE_X, "lf", false, true,  true  },
-    { GL_TEXTURE_CUBE_MAP_POSITIVE_X, "rt", true,  false, true  },
-    { GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, "bk", false, false, false },
-    { GL_TEXTURE_CUBE_MAP_POSITIVE_Y, "ft", true,  true,  false },
-    { GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, "dn", true,  false, true  },
-    { GL_TEXTURE_CUBE_MAP_POSITIVE_Z, "up", true,  false, true  },
-};
-
-void cleanuptexture(Texture *t)
-{
-    delete[] t->alphamask;
-    t->alphamask = nullptr;
-    if(t->id)
-    {
-        glDeleteTextures(1, &t->id);
-        t->id = 0;
-    }
-    if(t->type&Texture::TRANSIENT)
-    {
-        textures.remove(t->name);
-    }
-}
-
 void cleanuptextures()
 {
-    for(int i = 0; i < slots.length(); i++)
+    for(Slot * const &i : slots)
     {
-        slots[i]->cleanup();
+        i->cleanup();
     }
-    for(int i = 0; i < vslots.length(); i++)
+    for(VSlot * const &i : vslots)
     {
-        vslots[i]->cleanup();
+        i->cleanup();
     }
-    for(int i = 0; i < (MatFlag_Volume|MatFlag_Index)+1; ++i)
+    for(uint i = 0; i < (MatFlag_Volume|MatFlag_Index)+1; ++i)
     {
         materialslots[i].cleanup();
     }
-    for(int i = 0; i < decalslots.length(); i++)
+    for(DecalSlot * const &i : decalslots)
     {
-        decalslots[i]->cleanup();
+        i->cleanup();
     }
-    ENUMERATE(textures, Texture, tex, cleanuptexture(&tex));
+    for(auto itr = textures.begin(); itr != textures.end(); ++itr)
+    {
+        Texture &t = (*itr).second;
+        delete[] t.alphamask;
+        t.alphamask = nullptr;
+        if(t.id)
+        {
+            glDeleteTextures(1, &t.id);
+            t.id = 0;
+        }
+        if(t.type&Texture::TRANSIENT)
+        {
+            itr = textures.erase(itr);
+        }
+    }
 }
 
 bool reloadtexture(const char *name)
 {
-    Texture *t = textures.access(copypath(name));
-    if(t)
+    auto itr = textures.find(path(std::string(name)));
+    if(itr != textures.end())
     {
-        return reloadtexture(*t);
+        return (*itr).second.reload();
     }
     return true;
 }
 
-bool reloadtexture(Texture &tex)
+bool Texture::reload()
 {
-    if(tex.id)
+    if(id)
     {
         return true;
     }
-    switch(tex.type&Texture::TYPE)
+    switch(type&TYPE)
     {
-        case Texture::IMAGE:
+        case IMAGE:
         {
             int compress = 0;
             ImageData s;
-            if(!s.texturedata(tex.name, true, &compress) || !newtexture(&tex, nullptr, s, tex.clamp, tex.mipmap, false, false, compress))
+            if(!s.texturedata(name, true, &compress) || !newtexture(this, nullptr, s, clamp, mipmap, false, false, compress))
             {
                 return false;
             }
@@ -2701,12 +2618,13 @@ bool reloadtexture(Texture &tex)
 
 void reloadtex(char *name)
 {
-    Texture *t = textures.access(copypath(name));
-    if(!t)
+    auto itr = textures.find(path(std::string(name)));
+    if(itr == textures.end())
     {
         conoutf(Console_Error, "texture %s is not loaded", name);
         return;
     }
+    Texture *t = &(*itr).second;
     if(t->type&Texture::TRANSIENT)
     {
         conoutf(Console_Error, "can't reload transient texture %s", name);
@@ -2716,7 +2634,7 @@ void reloadtex(char *name)
     t->alphamask = nullptr;
     Texture oldtex = *t;
     t->id = 0;
-    if(!reloadtexture(*t))
+    if(!t->reload())
     {
         if(t->id)
         {
@@ -2727,20 +2645,18 @@ void reloadtex(char *name)
     }
 }
 
-COMMAND(reloadtex, "s");
-
 void reloadtextures()
 {
     int reloaded = 0;
-    ENUMERATE(textures, Texture, tex,
+    for(auto &[k, t] : textures)
     {
-        loadprogress = static_cast<float>(++reloaded)/textures.numelems;
-        reloadtexture(tex);
-    });
+        loadprogress = static_cast<float>(++reloaded)/textures.size();
+        t.reload();
+    }
     loadprogress = 0;
 }
 
-static void writepngchunk(stream *f, const char *type, uchar *data = nullptr, uint len = 0)
+static void writepngchunk(stream *f, const char *type, const uchar *data = nullptr, uint len = 0)
 {
     f->putbig<uint>(len);
     f->write(type, 4);
@@ -2757,8 +2673,23 @@ static void writepngchunk(stream *f, const char *type, uchar *data = nullptr, ui
 
 VARP(compresspng, 0, 9, 9);
 
-static void savepng(const char *filename, ImageData &image, bool flip)
+static void flushzip(z_stream &z, uchar *buf, const uint &buflen, uint &len, stream *f, uint &crc)
 {
+    int flush = buflen- z.avail_out;
+    crc = crc32(crc, buf, flush);
+    len += flush;
+    f->write(buf, flush);
+    z.next_out = static_cast<Bytef *>(buf);
+    z.avail_out = buflen;
+}
+
+static void savepng(const char *filename, const ImageData &image, bool flip)
+{
+    if(!image.h || !image.w)
+    {
+        conoutf(Console_Error, "cannot save 0-size png");
+        return;
+    }
     uchar ctype = 0;
     switch(image.bpp)
     {
@@ -2798,9 +2729,24 @@ static void savepng(const char *filename, ImageData &image, bool flip)
     f->write(signature, sizeof(signature));
     struct pngihdr
     {
-        uint width, height;
-        uchar bitdepth, colortype, compress, filter, interlace;
-    } ihdr = { static_cast<uint>(endianswap(image.w)), static_cast<uint>(endianswap(image.h)), 8, ctype, 0, 0, 0 };
+        uint width,
+             height;
+        uchar bitdepth,
+              colortype,
+              compress,
+              filter,
+              interlace;
+    };
+    pngihdr ihdr =
+    {
+        static_cast<uint>(endianswap(image.w)),
+        static_cast<uint>(endianswap(image.h)),
+        8,
+        ctype,
+        0,
+        0,
+        0
+    };
     writepngchunk(f, "IHDR", reinterpret_cast<uchar *>(&ihdr), 13);
     stream::offset idat = f->tell();
     uint len = 0;
@@ -2831,16 +2777,7 @@ static void savepng(const char *filename, ImageData &image, bool flip)
                 {
                     goto cleanuperror; //goto is beneath FLUSHZ macro
                 }
-//========================================================================FLUSHZ
-                #define FLUSHZ do { \
-                    int flush = sizeof(buf) - z.avail_out; \
-                    crc = crc32(crc, buf, flush); \
-                    len += flush; \
-                    f->write(buf, flush); \
-                    z.next_out = static_cast<Bytef *>(buf); \
-                    z.avail_out = sizeof(buf); \
-                } while(0)
-                FLUSHZ;
+                flushzip(z, buf, sizeof(buf), len, f, crc);
             }
         }
     }
@@ -2852,14 +2789,12 @@ static void savepng(const char *filename, ImageData &image, bool flip)
         {
             goto cleanuperror;
         }
-        FLUSHZ;
+        flushzip(z, buf, sizeof(buf), len, f, crc);
         if(err == Z_STREAM_END)
         {
             break;
         }
     }
-#undef FLUSHZ
-//==============================================================================
     deflateEnd(&z);
 
     f->seek(idat, SEEK_SET);
@@ -2920,15 +2855,36 @@ void screenshot(char *filename)
     }
 
     ImageData image(screenw, screenh, 3);
-    glPixelStorei(GL_PACK_ALIGNMENT, texalign(image.data, screenw, 3));
+    glPixelStorei(GL_PACK_ALIGNMENT, texalign(screenw, 3));
     glReadPixels(0, 0, screenw, screenh, GL_RGB, GL_UNSIGNED_BYTE, image.data);
     savepng(path(buf), image, true);
 }
-
-COMMAND(screenshot, "s");
 
 //used in libprimis api, avoids having to provide entire Shader iface
 void setldrnotexture()
 {
     ldrnotextureshader->set();
 }
+
+void inittexturecmds()
+{
+    addcommand("texturereset", reinterpret_cast<identfun>(texturereset), "i", Id_Command);
+    addcommand("materialreset", reinterpret_cast<identfun>(materialreset), "", Id_Command);
+    addcommand("decalreset", reinterpret_cast<identfun>(decalreset), "i", Id_Command);
+    addcommand("compactvslots", reinterpret_cast<identfun>(+[](int *cull){multiplayerwarn();rootworld.compactvslots(*cull!=0);rootworld.allchanged();}), "i", Id_Command);
+    addcommand("texture", reinterpret_cast<identfun>(texture), "ssiiif", Id_Command);
+    addcommand("texgrass", reinterpret_cast<identfun>(texgrass), "s", Id_Command);
+    addcommand("texscroll", reinterpret_cast<identfun>(texscroll), "ff", Id_Command);
+    addcommand("texoffset", reinterpret_cast<identfun>(texoffset_), "ii", Id_Command);
+    addcommand("texrotate", reinterpret_cast<identfun>(texrotate_), "i", Id_Command);
+    addcommand("texangle", reinterpret_cast<identfun>(texangle_), "f", Id_Command);
+    addcommand("texscale", reinterpret_cast<identfun>(texscale), "f", Id_Command);
+    addcommand("texalpha", reinterpret_cast<identfun>(texalpha), "ff", Id_Command);
+    addcommand("texcolor", reinterpret_cast<identfun>(texcolor), "fff", Id_Command);
+    addcommand("texrefract", reinterpret_cast<identfun>(texrefract), "ffff", Id_Command);
+    addcommand("texsmooth", reinterpret_cast<identfun>(texsmooth), "ib", Id_Command);
+    addcommand("decaldepth", reinterpret_cast<identfun>(decaldepth), "ff", Id_Command);
+    addcommand("reloadtex", reinterpret_cast<identfun>(reloadtex), "s", Id_Command);
+    addcommand("screenshot", reinterpret_cast<identfun>(screenshot), "s", Id_Command);
+}
+

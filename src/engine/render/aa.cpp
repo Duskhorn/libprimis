@@ -6,6 +6,7 @@
  * SMAA (subpixel morphological antialiasing)
  */
 #include "../libprimis-headers/cube.h"
+#include "../libprimis-headers/prop.h"
 #include "../../shared/geomexts.h"
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
@@ -16,6 +17,8 @@
 #include "renderlights.h"
 #include "rendertimers.h"
 #include "renderwindow.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/control.h"
@@ -23,6 +26,8 @@
 //externally used vars
 VAR(tqaaresolvegather, 1, 0, 0);
 matrix4 nojittermatrix;
+
+bool multisampledaa();
 
 namespace //internal functions incl. AA implementations
 {
@@ -50,7 +55,7 @@ namespace //internal functions incl. AA implementations
         useshaderbyname("tqaaresolve");
     }
 
-    void setuptqaa(int w, int h)
+    void setuptqaa(GBuffer &buf, int w, int h)
     {
         for(int i = 0; i < 2; ++i)
         {
@@ -65,7 +70,7 @@ namespace //internal functions incl. AA implementations
             glBindFramebuffer(GL_FRAMEBUFFER, tqaafbo[i]);
             createtexture(tqaatex[i], w, h, nullptr, 3, 1, GL_RGBA8, GL_TEXTURE_RECTANGLE);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, tqaatex[i], 0);
-            gbuf.bindgdepth();
+            buf.bindgdepth();
             if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             {
                 fatal("failed allocating TQAA buffer!");
@@ -102,8 +107,8 @@ namespace //internal functions incl. AA implementations
 
     void viewtqaa()
     {
-        int w = debugfullscreen ? hudw : std::min(hudw, hudh)/2,
-            h = debugfullscreen ? hudh : (w*hudh)/hudw,
+        int w = debugfullscreen ? hudw() : std::min(hudw(), hudh())/2,
+            h = debugfullscreen ? hudh() : (w*hudh())/hudw(),
             tw = gw,
             th = gh;
         SETSHADER(hudrect,);
@@ -130,10 +135,10 @@ namespace //internal functions incl. AA implementations
         SETSHADER(tqaaresolve,);
         LOCALPARAMF(colorweight, tqaacolorweightscale, -tqaacolorweightbias*tqaacolorweightscale);
         glBindTexture(GL_TEXTURE_RECTANGLE, tqaatex[0]);
-        glActiveTexture_(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, tqaaframe ? tqaatex[1] : tqaatex[0]);
         gbuf.setaavelocityparams(GL_TEXTURE2);
-        glActiveTexture_(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE0);
         vec4<float> quincunx(0, 0, 0, 0);
         if(tqaaquincunx)
         {
@@ -173,11 +178,13 @@ namespace //internal functions incl. AA implementations
         public:
             GLuint fxaafbo = 0;
             int fxaatype = -1;
+            int usefxaa;
 
             void cleanupfxaa();
             void dofxaa(GLuint outfbo = 0);
-            void setupfxaa(int w, int h);
+            void setupfxaa(GBuffer &buf, int w, int h);
 
+            fxaa();
         private:
 
             GLuint fxaatex = 0;
@@ -185,27 +192,31 @@ namespace //internal functions incl. AA implementations
 
             void loadfxaashaders();
             void clearfxaashaders();
+
+            int fxaaquality;
+            int fxaagreenluma;
     };
 
     fxaa fxaarenderer;
 
-    VARFP(usefxaa, 0, 0, 1, fxaarenderer.cleanupfxaa());
-    VARFP(fxaaquality, 0, 1, 3, fxaarenderer.cleanupfxaa());
-    VARFP(fxaagreenluma, 0, 0, 1, fxaarenderer.cleanupfxaa());
+    fxaa::fxaa()
+    {
+        variable("usefxaa", 0, 0, 1, &usefxaa, [] (ident *) { fxaarenderer.cleanupfxaa(); }, Idf_Persist);
+        variable("fxaaquality", 0, 1, 3, &fxaaquality, [] (ident *) { fxaarenderer.cleanupfxaa(); }, Idf_Persist);
+        variable("fxaagreenluma", 0, 0, 1, &fxaagreenluma, [] (ident *) { fxaarenderer.cleanupfxaa(); }, Idf_Persist);
+    };
 
     void fxaa::loadfxaashaders()
     {
         fxaatype = tqaatype >= 0 ? tqaatype : (!fxaagreenluma && !intel_texalpha_bug ? AA_Luma : AA_Unused);
         loadhdrshaders(fxaatype);
-        string opts;
-        int optslen = 0;
+        std::string opts;
         if(tqaa || fxaagreenluma || intel_texalpha_bug)
         {
-            opts[optslen++] = 'g';
+            opts.push_back('g');
         }
-        opts[optslen] = '\0';
-        DEF_FORMAT_STRING(fxaaname, "fxaa%d%s", fxaaquality, opts);
-        fxaashader = generateshader(fxaaname, "fxaashaders %d \"%s\"", fxaaquality, opts);
+        std::string fxaaname = std::string("fxaa").append(std::to_string(fxaaquality)).append(opts);
+        fxaashader = generateshader(fxaaname.c_str(), "fxaashaders %d \"%s\"", fxaaquality, opts.c_str());
     }
 
     void fxaa::clearfxaashaders()
@@ -214,7 +225,7 @@ namespace //internal functions incl. AA implementations
         fxaashader = nullptr;
     }
 
-    void fxaa::setupfxaa(int w, int h)
+    void fxaa::setupfxaa(GBuffer &buf, int w, int h)
     {
         if(!fxaatex)
         {
@@ -227,7 +238,7 @@ namespace //internal functions incl. AA implementations
         glBindFramebuffer(GL_FRAMEBUFFER, fxaafbo);
         createtexture(fxaatex, w, h, nullptr, 3, 1, tqaa || (!fxaagreenluma && !intel_texalpha_bug) ? GL_RGBA8 : GL_RGB, GL_TEXTURE_RECTANGLE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, fxaatex, 0);
-        gbuf.bindgdepth();
+        buf.bindgdepth();
         if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         {
             fatal("failed allocating FXAA buffer!");
@@ -272,11 +283,32 @@ namespace //internal functions incl. AA implementations
     class subpixelaa
     {
         public:
-            GLuint smaafbo[4] = { 0, 0, 0, 0 };
+            enum SMAAProp
+            {
+                T2X = 0,
+                S2X,
+                X4,
+                SMAA,
+                Spatial,
+                Quality,
+                ColorEdge,
+                GreenLuma,
+                DepthMask,
+                Stencil,
+                Debug,
+
+                Count
+            };
+
+        private:
+            static const prop::PropertyMeta prop_meta[SMAAProp::Count];
+
+        public:
+            std::array<GLuint, 4> smaafbo {0, 0, 0, 0};
             int smaatype = -1;
 
             void cleanupsmaa();
-            void setupsmaa(int w, int h);
+            void setupsmaa(GBuffer &buf, int w, int h);
 
             //executes the smaa process on the given output framebuffer object (outfbo)
             //split toggles splitting process into two passes
@@ -284,7 +316,15 @@ namespace //internal functions incl. AA implementations
 
             //debug view for smaa buffers
             void viewsmaa();
+
+            subpixelaa(GBuffer &buf);
+
+            bool setsmaaproperty(std::string name, int value);
+            const prop::Property<>* getsmaaproperty(std::string) const;
+            const prop::Property<>& getsmaaproperty(SMAAProp prop) const;
+
         private:
+            GBuffer &buf;
             //smaa graphics buffers
             GLuint smaaareatex = 0,
                    smaasearchtex = 0,
@@ -302,8 +342,8 @@ namespace //internal functions incl. AA implementations
             static constexpr int smaasearchtexwidth  = 66,
                                  smaasearchtexheight = 33;
 
-            uchar smaasearchdata[smaasearchtexwidth*smaasearchtexheight];
-            uchar smaaareadata[smaaareatexwidth*smaaareatexheight*2];
+            std::array<uchar, smaasearchtexwidth*smaasearchtexheight> smaasearchdata;
+            std::array<uchar, smaaareatexwidth*smaaareatexheight*2> smaaareadata;
 
             bool smaasearchdatainited = false;
             bool smaaareadatainited = false;
@@ -336,86 +376,199 @@ namespace //internal functions incl. AA implementations
             vec2 areadiag2(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y, float p4x, float p4y, float d, float left, const vec2 &offset, int pattern);
             vec2 areadiag(int pattern, float left, float right, const vec2 &offset);
             void gensmaaareadata();
+
+            /* smaa vars are set by `setupsmaa()` automatically: if TQAA and/or MSAA are
+             * enabled, the following variables will be set to 1
+             *
+             * generally, do not change these vars from ingame
+             */
+
+            std::array<prop::Property<>, SMAAProp::Count> props =
+                prop::make_props_array<SMAAProp::Count, prop::Property<>>(prop_meta);
     };
 
-    subpixelaa smaarenderer;
+    const prop::PropertyMeta subpixelaa::prop_meta[SMAAProp::Count] =
+    {
+        prop::PropertyMeta
+        (
+            "t2x",
+            prop::PropertyType::Int,
+            0, 0, 1
+        ),
+        prop::PropertyMeta
+        (
+            "s2x",
+            prop::PropertyType::Int,
+            0, 0, 1
+        ),
+        prop::PropertyMeta
+        (
+            "x4",
+            prop::PropertyType::Int,
+            0, 0, 1
+        ),
+        prop::PropertyMeta
+        (
+            "enabled",
+            prop::PropertyType::Int,
+            0, 0, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->buf.cleanupgbuffer();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "spatial",
+            prop::PropertyType::Int,
+            0, 1, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "quality",
+            prop::PropertyType::Int,
+            0, 2, 3,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "coloredge",
+            prop::PropertyType::Int,
+            0, 0, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "greenluma",
+            prop::PropertyType::Int,
+            0, 0, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "depthmask",
+            prop::PropertyType::Int,
+            0, 1, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "stencil",
+            prop::PropertyType::Int,
+            0, 1, 1,
+            [](std::any smaarenderer)
+            {
+                subpixelaa* smaa = std::any_cast<subpixelaa*>(smaarenderer);
+                smaa->cleanupsmaa();
+            }
+        ),
+        prop::PropertyMeta
+        (
+            "debug",
+            prop::PropertyType::Int,
+            0, 0, 5
+        )
+    };
 
-    /* smaa vars are set by `setupsmaa()` automatically: if TQAA and/or MSAA are
-     * enabled, the following variables will be set to 1
-     *
-     * generally, do not change these vars from ingame
-     */
-    VAR(smaat2x, 1, 0, 0); //SMAA Temporal 2x (temporal antialiasing)
-    VAR(smaas2x, 1, 0, 0); //SMAA Split 2x (multisample antialiasing)
-    VAR(smaa4x, 1, 0, 0);  //SMAA 4x (both temporal and multisample)
+    subpixelaa smaarenderer(gbuf);
 
-    VARFP(smaa, 0, 0, 1, gbuf.cleanupgbuffer()); //toggles smaa
-    VARFP(smaaspatial, 0, 1, 1, gbuf.cleanupgbuffer());
-    VARFP(smaaquality, 0, 2, 3, smaarenderer.cleanupsmaa());
-    VARFP(smaacoloredge, 0, 0, 1, smaarenderer.cleanupsmaa()); //toggle between color & luma edge shaders
-    VARFP(smaagreenluma, 0, 0, 1, smaarenderer.cleanupsmaa());
-    VARF(smaadepthmask, 0, 1, 1, smaarenderer.cleanupsmaa());
-    VARF(smaastencil, 0, 1, 1, smaarenderer.cleanupsmaa());
-    VAR(debugsmaa, 0, 0, 5); //see viewsmaa() below, displays one of the five smaa texs
+    bool subpixelaa::setsmaaproperty(std::string name, int value)
+    {
+        return set_prop(name, value, props, this);
+    }
+
+    const prop::Property<>* subpixelaa::getsmaaproperty(std::string name) const
+    {
+        return prop::find_prop(name, props);
+    }
+
+    const prop::Property<>& subpixelaa::getsmaaproperty(SMAAProp prop) const
+    {
+        return props[prop];
+    }
+
+    subpixelaa::subpixelaa(GBuffer &inbuf) : buf(inbuf)
+    {
+    }
 
     void subpixelaa::loadsmaashaders(bool split)
     {
-        smaatype = tqaatype >= 0 ? tqaatype : (!smaagreenluma && !intel_texalpha_bug && !smaacoloredge ? AA_Luma : AA_Unused);
+        smaatype = tqaatype >= 0 ? tqaatype : (!props[SMAAProp::GreenLuma].get_int() && !intel_texalpha_bug && !props[SMAAProp::ColorEdge].get_int() ? AA_Luma : AA_Unused);
         if(split)
         {
             smaatype += AA_Split;
         }
         loadhdrshaders(smaatype);
 
-        string opts;
-        int optslen = 0;
-        if((smaadepthmask && (!tqaa || msaalight)) || (smaastencil && ghasstencil > (msaasamples ? 1 : 0)))
+        std::string opts;
+        if((props[SMAAProp::DepthMask].get_int() && (!tqaa || msaalight)) || (props[SMAAProp::Stencil].get_int() && ghasstencil > (msaasamples ? 1 : 0)))
         {
-            opts[optslen++] = 'd';
+            opts.push_back('d');
         }
         if(split)
         {
-            opts[optslen++] = 's';
+            opts.push_back('s');
         }
-        if(tqaa || smaagreenluma || intel_texalpha_bug)
+        if(tqaa || props[SMAAProp::GreenLuma].get_int() || intel_texalpha_bug)
         {
-            opts[optslen++] = 'g';
+            opts.push_back('g');
         }
         if(tqaa)
         {
-            opts[optslen++] = 't';
+            opts.push_back('t');
         }
-        opts[optslen] = '\0';
-        DEF_FORMAT_STRING(lumaedgename, "SMAALumaEdgeDetection%d%s", smaaquality, opts);
-        DEF_FORMAT_STRING(coloredgename, "SMAAColorEdgeDetection%d%s", smaaquality, opts);
-        DEF_FORMAT_STRING(blendweightname, "SMAABlendingWeightCalculation%d%s", smaaquality, opts);
-        DEF_FORMAT_STRING(neighborhoodname, "SMAANeighborhoodBlending%d%s", smaaquality, opts);
-        smaalumaedgeshader = lookupshaderbyname(lumaedgename);
-        smaacoloredgeshader = lookupshaderbyname(coloredgename);
-        smaablendweightshader = lookupshaderbyname(blendweightname);
-        smaaneighborhoodshader = lookupshaderbyname(neighborhoodname);
+        std::string lumaedgename = std::string("SMAALumaEdgeDetection").append(props[SMAAProp::Quality].to_string()).append(opts);
+        std::string coloredgename = std::string("SMAAColorEdgeDetection").append(props[SMAAProp::Quality].to_string()).append(opts);
+        std::string blendweightname = std::string("SMAABlendingWeightCalculation").append(props[SMAAProp::Quality].to_string()).append(opts);
+        std::string neighborhoodname = std::string("SMAANeighborhoodBlending").append(props[SMAAProp::Quality].to_string()).append(opts);
+        smaalumaedgeshader = lookupshaderbyname(lumaedgename.c_str());
+        smaacoloredgeshader = lookupshaderbyname(coloredgename.c_str());
+        smaablendweightshader = lookupshaderbyname(blendweightname.c_str());
+        smaaneighborhoodshader = lookupshaderbyname(neighborhoodname.c_str());
 
         if(smaalumaedgeshader && smaacoloredgeshader && smaablendweightshader && smaaneighborhoodshader)
         {
             return;
         }
-        generateshader(nullptr, "smaashaders %d \"%s\"", smaaquality, opts);
-        smaalumaedgeshader = lookupshaderbyname(lumaedgename);
+        generateshader(nullptr, "smaashaders %d \"%s\"", props[SMAAProp::Quality].get_int(), opts.c_str());
+        smaalumaedgeshader = lookupshaderbyname(lumaedgename.c_str());
         if(!smaalumaedgeshader)
         {
             smaalumaedgeshader = nullshader;
         }
-        smaacoloredgeshader = lookupshaderbyname(coloredgename);
+        smaacoloredgeshader = lookupshaderbyname(coloredgename.c_str());
         if(!smaacoloredgeshader)
         {
             smaacoloredgeshader = nullshader;
         }
-        smaablendweightshader = lookupshaderbyname(blendweightname);
+        smaablendweightshader = lookupshaderbyname(blendweightname.c_str());
         if(!smaablendweightshader)
         {
             smaablendweightshader = nullshader;
         }
-        smaaneighborhoodshader = lookupshaderbyname(neighborhoodname);
+        smaaneighborhoodshader = lookupshaderbyname(neighborhoodname.c_str());
         if(!smaaneighborhoodshader)
         {
             smaaneighborhoodshader = nullshader;
@@ -437,8 +590,8 @@ namespace //internal functions incl. AA implementations
         {
             return;
         }
-        int edges[33];
-        memset(edges, -1, sizeof(edges));
+        std::array<int, 33> edges;
+        edges.fill(-1);
         for(int i = 0; i < 2; ++i)
         {
             for(int j = 0; j < 2; ++j)
@@ -452,7 +605,7 @@ namespace //internal functions incl. AA implementations
                 }
             }
         }
-        memset(smaasearchdata, 0, sizeof(smaasearchdata));
+        smaasearchdata.fill(0);
         for(int y = 0; y < 33; ++y)
         {
             for(int x = 0; x < 33; ++x)
@@ -762,7 +915,7 @@ namespace //internal functions incl. AA implementations
         {
             return;
         }
-        memset(smaaareadata, 0, sizeof(smaaareadata));
+        smaaareadata.fill(0);
         for(int offset = 0; offset < static_cast<int>(sizeof(offsetsortho)/sizeof(offsetsortho[0])); ++offset)
         {
             for(int pattern = 0; pattern < 16; ++pattern)
@@ -806,7 +959,7 @@ namespace //internal functions incl. AA implementations
         smaaareadatainited = true;
     }
 
-    void subpixelaa::setupsmaa(int w, int h)
+    void subpixelaa::setupsmaa(GBuffer &buf, int w, int h)
     {
         if(!smaaareatex)
         {
@@ -818,13 +971,13 @@ namespace //internal functions incl. AA implementations
         }
         gensmaasearchdata();
         gensmaaareadata();
-        createtexture(  smaaareatex,   smaaareatexwidth,   smaaareatexheight,   smaaareadata, 3, 1, GL_RG8, GL_TEXTURE_RECTANGLE, 0, 0, 0, false);
-        createtexture(smaasearchtex, smaasearchtexwidth, smaasearchtexheight, smaasearchdata, 3, 0,  GL_R8, GL_TEXTURE_RECTANGLE, 0, 0, 0, false);
+        createtexture(  smaaareatex,   smaaareatexwidth,   smaaareatexheight,   smaaareadata.data(), 3, 1, GL_RG8, GL_TEXTURE_RECTANGLE, 0, 0, 0, false);
+        createtexture(smaasearchtex, smaasearchtexwidth, smaasearchtexheight, smaasearchdata.data(), 3, 0,  GL_R8, GL_TEXTURE_2D, 0, 0, 0, false);
         bool split = multisampledaa();
         smaasubsampleorder = split ? (msaapositions[0].x < 0.5f ? 1 : 0) : -1;
-        smaat2x = tqaa ? 1 : 0;
-        smaas2x = split ? 1 : 0;
-        smaa4x = tqaa && split ? 1 : 0;
+        props[SMAAProp::T2X].set_no_cb(tqaa ? 1 : 0);
+        props[SMAAProp::S2X].set_no_cb(split ? 1 : 0);
+        props[SMAAProp::X4].set_no_cb(tqaa && split ? 1 : 0);
         for(int i = 0; i < (split ? 4 : 3); ++i)
         {
             if(!smaatex[i])
@@ -841,7 +994,7 @@ namespace //internal functions incl. AA implementations
             {
                 case 0:
                 {
-                    format = tqaa || (!smaagreenluma && !intel_texalpha_bug && !smaacoloredge) ? GL_RGBA8 : GL_RGB;
+                    format = tqaa || (!props[SMAAProp::GreenLuma].get_int() && !intel_texalpha_bug && !props[SMAAProp::ColorEdge].get_int()) ? GL_RGBA8 : GL_RGB;
                     break;
                 }
                 case 1:
@@ -869,9 +1022,9 @@ namespace //internal functions incl. AA implementations
                 static const GLenum drawbufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
                 glDrawBuffers(2, drawbufs);
             }
-            if(!i || (smaadepthmask && (!tqaa || msaalight)) || (smaastencil && ghasstencil > (msaasamples ? 1 : 0)))
+            if(!i || (props[SMAAProp::DepthMask].get_int() && (!tqaa || msaalight)) || (props[SMAAProp::Stencil].get_int() && ghasstencil > (msaasamples ? 1 : 0)))
             {
-                gbuf.bindgdepth();
+                buf.bindgdepth();
             }
             if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             {
@@ -895,12 +1048,12 @@ namespace //internal functions incl. AA implementations
             glDeleteTextures(1, &smaasearchtex);
             smaasearchtex = 0;
         }
-        for(int i = 0; i < 4; ++i)
+        for(GLuint i : smaafbo)
         {
-            if(smaafbo[i])
+            if(i)
             {
-                glDeleteFramebuffers(1, &smaafbo[i]);
-                smaafbo[i] = 0;
+                glDeleteFramebuffers(1, &i);
+                i = 0;
             }
         }
         for(int i = 0; i < 5; ++i)
@@ -912,15 +1065,17 @@ namespace //internal functions incl. AA implementations
             }
         }
         smaasubsampleorder = -1;
-        smaat2x = smaas2x = smaa4x = 0;
+        props[SMAAProp::T2X].set_no_cb(0);
+        props[SMAAProp::S2X].set_no_cb(0);
+        props[SMAAProp::X4].set_no_cb(0);
 
         clearsmaashaders();
     }
 
     void subpixelaa::viewsmaa()
     {
-        int w = debugfullscreen ? hudw : std::min(hudw, hudh)/2,
-            h = debugfullscreen ? hudh : (w*hudh)/hudw,
+        int w = debugfullscreen ? hudw() : std::min(hudw(), hudh())/2,
+            h = debugfullscreen ? hudh() : (w*hudh())/hudw(),
             tw = gw,
             th = gh;
         SETSHADER(hudrect,);
@@ -932,7 +1087,7 @@ namespace //internal functions incl. AA implementations
          *  4: show the buffer of edge-detect patterns
          *  5: show the smaa search texture
          */
-        switch(debugsmaa)
+        switch(props[SMAAProp::Debug].get_int())
         {
             case 1:
             {
@@ -958,9 +1113,9 @@ namespace //internal functions incl. AA implementations
             }
             case 5:
             {
-                glBindTexture(GL_TEXTURE_RECTANGLE, smaasearchtex);
-                tw = smaasearchtexwidth;
-                th = smaasearchtexheight;
+                glBindTexture(GL_TEXTURE_2D, smaasearchtex);
+                tw = 1;
+                th = 1;
                 break;
             }
         }
@@ -972,8 +1127,8 @@ namespace //internal functions incl. AA implementations
         timer *smaatimer = begintimer("smaa");
 
         int cleardepth = msaalight ? GL_DEPTH_BUFFER_BIT | (ghasstencil > 1 ? GL_STENCIL_BUFFER_BIT : 0) : 0;
-        bool depthmask = smaadepthmask && (!tqaa || msaalight),
-             stencil = smaastencil && ghasstencil > (msaasamples ? 1 : 0);
+        bool depthmask = props[SMAAProp::DepthMask].get_int() && (!tqaa || msaalight),
+             stencil = props[SMAAProp::Stencil].get_int() && ghasstencil > (msaasamples ? 1 : 0);
         for(int pass = 0; pass < (split ? 2 : 1); ++pass) // loop through multiple passes if doing multisample aa
         {
             glBindFramebuffer(GL_FRAMEBUFFER, smaafbo[1]);
@@ -995,11 +1150,11 @@ namespace //internal functions incl. AA implementations
                 glStencilFunc(GL_ALWAYS, 0x10*(pass+1), ~0);
                 glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             }
-            if(smaacoloredge)
+            if(props[SMAAProp::ColorEdge].get_int())
             {
                 smaacoloredgeshader->set();
             }
-            else
+            else if(smaalumaedgeshader)
             {
                 smaalumaedgeshader->set();
             }
@@ -1020,7 +1175,10 @@ namespace //internal functions incl. AA implementations
             {
                 glClear(GL_COLOR_BUFFER_BIT);
             }
-            smaablendweightshader->set();
+            if(smaablendweightshader)
+            {
+                smaablendweightshader->set();
+            }
             vec4<float> subsamples(0, 0, 0, 0);
             if(tqaa && split)
             {
@@ -1038,11 +1196,11 @@ namespace //internal functions incl. AA implementations
             }
             LOCALPARAM(subsamples, subsamples);
             glBindTexture(GL_TEXTURE_RECTANGLE, smaatex[1]);
-            glActiveTexture_(GL_TEXTURE1);
+            glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_RECTANGLE, smaaareatex);
-            glActiveTexture_(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_RECTANGLE, smaasearchtex);
-            glActiveTexture_(GL_TEXTURE0);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, smaasearchtex);
+            glActiveTexture(GL_TEXTURE0);
             screenquad(vieww, viewh);
             if(depthmask)
             {
@@ -1057,18 +1215,21 @@ namespace //internal functions incl. AA implementations
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, tqaa ? tqaafbo[0] : outfbo);
-        smaaneighborhoodshader->set();
+        if(smaaneighborhoodshader)
+        {
+            smaaneighborhoodshader->set();
+        }
         glBindTexture(GL_TEXTURE_RECTANGLE, smaatex[0]);
-        glActiveTexture_(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, smaatex[2]);
         if(split)
         {
-            glActiveTexture_(GL_TEXTURE2);
+            glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_RECTANGLE, smaatex[4]);
-            glActiveTexture_(GL_TEXTURE3);
+            glActiveTexture(GL_TEXTURE3);
             glBindTexture(GL_TEXTURE_RECTANGLE, smaatex[3]);
         }
-        glActiveTexture_(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE0);
         screenquad(vieww, viewh);
         if(tqaa)
         {
@@ -1085,7 +1246,7 @@ namespace //internal functions incl. AA implementations
 //for temporal aa, called externally
 void GBuffer::setaavelocityparams(GLenum tmu)
 {
-    glActiveTexture_(tmu);
+    glActiveTexture(tmu);
     if(msaalight)
     {
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
@@ -1094,7 +1255,7 @@ void GBuffer::setaavelocityparams(GLenum tmu)
     {
         glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
     }
-    glActiveTexture_(++tmu);
+    glActiveTexture(++tmu);
     if(msaasamples)
     {
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msnormaltex);
@@ -1103,7 +1264,7 @@ void GBuffer::setaavelocityparams(GLenum tmu)
     {
         glBindTexture(GL_TEXTURE_RECTANGLE, gnormaltex);
     }
-    glActiveTexture_(GL_TEXTURE0);
+    glActiveTexture(GL_TEXTURE0);
 
     matrix4 reproject;
     reproject.muld(tqaaframe ? tqaaprevscreenmatrix : screenmatrix, worldmatrix);
@@ -1123,24 +1284,24 @@ void GBuffer::setaavelocityparams(GLenum tmu)
 }
 
 //general aa fxns
-void setupaa(int w, int h)
+void setupaa(GBuffer &buf, int w, int h)
 {
     if(tqaa && !tqaafbo[0])
     {
-        setuptqaa(w, h);
+        setuptqaa(buf, w, h);
     }
-    if(smaa)
+    if(smaarenderer.getsmaaproperty(subpixelaa::SMAA).get_int())
     {
         if(!smaarenderer.smaafbo[0])
         {
-            smaarenderer.setupsmaa(w, h);
+            smaarenderer.setupsmaa(buf, w, h);
         }
     }
-    else if(usefxaa)
+    else if(fxaarenderer.usefxaa)
     {
         if(!fxaarenderer.fxaafbo)
         {
-            fxaarenderer.setupfxaa(w, h);
+            fxaarenderer.setupfxaa(buf, w, h);
         }
     }
 }
@@ -1160,65 +1321,72 @@ void jitteraa()
     }
 }
 
-int aamaskstencil = -1,
-           aamask = -1;
+// aa mask
 
-void setaamask(bool on)
+namespace aamask
 {
-    int val = on && !drawtex ? 1 : 0;
-    if(aamask == val)
-    {
-        return;
-    }
-    if(!aamaskstencil)
-    {
-        glStencilOp(GL_KEEP, GL_KEEP, val ? GL_REPLACE : GL_KEEP);
-        if(aamask < 0)
-        {
-            glStencilFunc(GL_ALWAYS, 0x80, ~0);
-            glEnable(GL_STENCIL_TEST);
-        }
-    }
-    else if(aamaskstencil > 0)
-    {
-        if(val)
-        {
-            glStencilFunc(GL_ALWAYS, 0x80 | aamaskstencil, ~0);
-        }
-        else if(aamask >= 0)
-        {
-            glStencilFunc(GL_ALWAYS, aamaskstencil, ~0);
-        }
-    }
-    aamask = val;
-    GLOBALPARAMF(aamask, aamask);
-}
+    static int aamaskstencil = -1,
+                      aamask = -1;
 
-void enableaamask(int stencil)
-{
-    aamask = -1;
-    aamaskstencil = !msaasamples && ghasstencil && tqaa && tqaamovemask && !drawtex ? stencil|avatarmask : -1;
-}
-
-void disableaamask()
-{
-    if(aamaskstencil >= 0 && aamask >= 0)
+    void set(bool on)
     {
+        int val = on && !drawtex ? 1 : 0;
+        if(aamask == val)
+        {
+            return;
+        }
         if(!aamaskstencil)
         {
-            glDisable(GL_STENCIL_TEST);
+            glStencilOp(GL_KEEP, GL_KEEP, val ? GL_REPLACE : GL_KEEP);
+            if(aamask < 0)
+            {
+                glStencilFunc(GL_ALWAYS, 0x80, ~0);
+                glEnable(GL_STENCIL_TEST);
+            }
         }
-        else if(aamask)
+        else if(aamaskstencil > 0)
         {
-            glStencilFunc(GL_ALWAYS, aamaskstencil, ~0);
+            if(val)
+            {
+                glStencilFunc(GL_ALWAYS, 0x80 | aamaskstencil, ~0);
+            }
+            else if(aamask >= 0)
+            {
+                glStencilFunc(GL_ALWAYS, aamaskstencil, ~0);
+            }
         }
+        aamask = val;
+        GLOBALPARAMF(aamask, aamask);
+    }
+
+    void enable(int stencil)
+    {
         aamask = -1;
+        aamaskstencil = !msaasamples && ghasstencil && tqaa && tqaamovemask && !drawtex ? stencil|avatarmask : -1;
+    }
+
+    void disable()
+    {
+        if(aamaskstencil >= 0 && aamask >= 0)
+        {
+            if(!aamaskstencil)
+            {
+                glDisable(GL_STENCIL_TEST);
+            }
+            else if(aamask)
+            {
+                glStencilFunc(GL_ALWAYS, aamaskstencil, ~0);
+            }
+            aamask = -1;
+        }
     }
 }
 
 bool multisampledaa()
 {
-    return msaasamples == 2 && (smaa ? msaalight && smaaspatial : tqaa);
+    return msaasamples == 2 &&
+          (smaarenderer.getsmaaproperty(subpixelaa::SMAA).get_int() ? msaalight &&
+           smaarenderer.getsmaaproperty(subpixelaa::Spatial).get_int() : tqaa);
 }
 
 //used by rendergl
@@ -1232,15 +1400,15 @@ bool multisampledaa()
  *
  * method pointer resolve is used to setup the fbo for the specified aa
  */
-void doaa(GLuint outfbo, GBuffer gbuffer)
+void doaa(GLuint outfbo, GBuffer &gbuffer)
 {
-    if(smaa)
+    if(smaarenderer.getsmaaproperty(subpixelaa::SMAA).get_int())
     {
         bool split = multisampledaa();
         gbuffer.processhdr(smaarenderer.smaafbo[0], smaarenderer.smaatype);
         smaarenderer.dosmaa(outfbo, split);
     }
-    else if(usefxaa)
+    else if(fxaarenderer.usefxaa)
     {
         gbuffer.processhdr(fxaarenderer.fxaafbo, fxaarenderer.fxaatype);
         fxaarenderer.dofxaa(outfbo);
@@ -1258,7 +1426,7 @@ void doaa(GLuint outfbo, GBuffer gbuffer)
 
 bool debugaa()
 {
-    if(debugsmaa)
+    if(smaarenderer.getsmaaproperty(subpixelaa::Debug).get_int())
     {
         smaarenderer.viewsmaa();
     }
@@ -1278,4 +1446,18 @@ void cleanupaa()
     smaarenderer.cleanupsmaa();
     fxaarenderer.cleanupfxaa();
     cleanuptqaa();
+}
+
+void initaacmds()
+{
+    addcommand("getsmaaproperty", reinterpret_cast<identfun>(+[] (char* name)
+    {
+        const prop::Property<>* prop = smaarenderer.getsmaaproperty(std::string(name));
+        if(prop) prop->cmd_result();
+    }), "s", Id_Command);
+
+    addcommand("setsmaaproperty", reinterpret_cast<identfun>(+[] (char* name, int* value)
+    {
+        smaarenderer.setsmaaproperty(std::string(name), *value);
+    }), "si", Id_Command);
 }

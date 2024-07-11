@@ -5,17 +5,21 @@ class GBuffer;
 
 extern matrix4 nojittermatrix;
 
-extern void setupaa(int w, int h);
+extern void setupaa(GBuffer &buf, int w, int h);
 extern void jitteraa();
-extern bool multisampledaa();
-extern void setaamask(bool val);
-extern void enableaamask(int stencil = 0);
-extern void disableaamask();
-extern void doaa(GLuint outfbo, GBuffer gbuffer);
+
+namespace aamask
+{
+    void set(bool val);
+    void enable(int stencil = 0);
+    void disable();
+}
+
+extern void doaa(GLuint outfbo, GBuffer &gbuffer);
 extern bool debugaa();
 extern void cleanupaa();
 
-enum
+enum AAFlag
 {
     AA_Unused = 0,
     AA_Luma,

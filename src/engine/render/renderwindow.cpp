@@ -4,6 +4,7 @@
  * also handles stuff such as main menu rendering and other non-intensive rendering
  * as well as global rendering settings such as gamma
  */
+#include "SDL_ttf.h"
 
 #include "../libprimis-headers/cube.h"
 #include "../../shared/geomexts.h"
@@ -17,8 +18,11 @@
 #include "rendermodel.h"
 #include "renderparticles.h"
 #include "rendertext.h"
+#include "renderttf.h"
 #include "renderva.h"
 #include "renderwindow.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "stain.h"
 #include "texture.h"
 
@@ -41,7 +45,6 @@ int screenw = 0,
     screenh = 0;
 SDL_Window   *screen    = nullptr;
 static SDL_GLContext glcontext = nullptr;
-static SDL_Renderer *renderer  = nullptr;
 
 //helper function for main menu rendering routines
 //returns w and h if both are above 1024x768
@@ -63,12 +66,12 @@ static void getbackgroundres(int &w, int &h)
     h = static_cast<int>(std::ceil(h*hk));
 }
 
-static string backgroundcaption   = "",
-              backgroundmapname   = "";
+static std::string backgroundcaption   = "",
+                   backgroundmapname   = "",
+                   backgroundmapinfo   = "";
 static Texture *backgroundmapshot = nullptr;
-static char *backgroundmapinfo    = nullptr;
 
-void bgquad(float x, float y, float w, float h, float tx = 0, float ty = 0, float tw = 1, float th = 1)
+static void bgquad(float x, float y, float w, float h, float tx = 0, float ty = 0, float tw = 1, float th = 1)
 {
     gle::begin(GL_TRIANGLE_STRIP);
     gle::attribf(x,   y);   gle::attribf(tx,      ty);
@@ -86,7 +89,7 @@ Notes:
     * Unsure what 'w' and 'h' refers to, maybe screen resolution?
 */
 
-void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *mapshot, const char *mapname, const char *mapinfo)
+static void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *mapshot, const char *mapname, const char *mapinfo)
 {
     static int lastupdate  = -1,
                lastw       = -1,
@@ -132,7 +135,7 @@ void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *ma
           logo_x = 0.5f*(win_w - logo_w),
           logo_y = 0.5f*(win_h*0.5f - logo_h);
 
-    settexture( (maxtexsize >= 1024 || maxtexsize == 0) && (hudw > 1280 || hudh > 800)
+    settexture( (maxtexsize >= 1024 || maxtexsize == 0) && (hudw() > 1280 || hudh() > 800)
               ? "<premul>media/interface/logo_1024.png" //1024x wide logo
               : "<premul>media/interface/logo.png", //512x wide logo for small screens
         3);
@@ -147,7 +150,8 @@ void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *ma
               tx  = 0.5f*(win_w - tw*tsz),
               ty  = win_h - 0.075f*1.5f*std::min(win_w, win_h) - FONTH*tsz;
         pushhudtranslate(tx, ty, tsz);
-        draw_text(caption, 0, 0);
+        //draw_text(caption, 0, 0);
+        ttr.renderttf(caption, {0xFF, 0xFF, 0xFF, 0}, 0, 0);
         pophudmatrix();
     }
     if(mapshot || mapname)
@@ -187,7 +191,9 @@ void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *ma
                   tsz = sz/(8*FONTH),
                   tx  = std::max(0.5f * (mw*msz - tw * tsz), 0.0f);
             pushhudtranslate(x + mx + tx, y, tsz);
-            draw_text(mapname, 0, 0);
+            //draw_text(mapname, 0, 0);
+            ttr.fontsize(42);
+            ttr.renderttf(mapname, {0xFF, 0xFF, 0xFF, 0}, 0, 0);
             pophudmatrix();
             my = 1.5f*FONTH*tsz;
         }
@@ -195,7 +201,9 @@ void renderbackgroundview(int win_w, int win_h, const char *caption, Texture *ma
         if(mapinfo)
         {
             pushhudtranslate(x + mx, y + my, msz);
-            draw_text(mapinfo, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, -1, infowidth);
+            //draw_text(mapinfo, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, -1, infowidth);
+            ttr.fontsize(42);
+            ttr.renderttf(mapinfo, {0xFF, 0xFF, 0xFF, 0}, 0, 0);
             pophudmatrix();
         }
     }
@@ -208,22 +216,23 @@ void swapbuffers(bool)
     SDL_GL_SwapWindow(screen);
 }
 
-void setbackgroundinfo(const char *caption = nullptr, Texture *mapshot = nullptr, const char *mapname = nullptr, const char *mapinfo = nullptr)
+static void setbackgroundinfo(const char *caption = nullptr, Texture *mapshot = nullptr, const char *mapname = nullptr, const char *mapinfo = nullptr)
 {
     renderedframe = false;
-    copystring(backgroundcaption, caption ? caption : "");
+    backgroundcaption = std::string(caption ? caption : "");
     backgroundmapshot = mapshot;
-    copystring(backgroundmapname, mapname ? mapname : "");
-    if(mapinfo != backgroundmapinfo)
+    backgroundmapname = std::string(mapname ? mapname : "");
+    std::string minfo = std::string(mapinfo ? mapinfo : "");
+    if(minfo != backgroundmapinfo)
     {
-        delete[] backgroundmapinfo;
-        if(mapinfo)
+        backgroundmapinfo = "";
+        if(!minfo.empty())
         {
-            backgroundmapinfo = newstring(mapinfo);
+            backgroundmapinfo = std::string(mapinfo);
         }
         else
         {
-            backgroundmapinfo = nullptr;
+            backgroundmapinfo = "";
         }
     }
 }
@@ -234,11 +243,11 @@ void renderbackground(const char *caption, Texture *mapshot, const char *mapname
     {
         return;
     }
-    int w = hudw,
-        h = hudh;
+    int w = hudw(),
+        h = hudh();
     if(forceaspect)
     {
-        w = static_cast<int>(std::ceil(h*forceaspect));
+        w = std::ceil(h*forceaspect);
     }
     getbackgroundres(w, h);
     gettextres(w, h);
@@ -256,7 +265,7 @@ void renderbackground(const char *caption, Texture *mapshot, const char *mapname
     setbackgroundinfo(caption, mapshot, mapname, mapinfo);
 }
 
-void restorebackground(int w, int h, bool force = false)
+static void restorebackground(int w, int h, bool force = false)
 {
     if(renderedframe)
     {
@@ -266,14 +275,12 @@ void restorebackground(int w, int h, bool force = false)
         }
         setbackgroundinfo();
     }
-    const char * caption = backgroundcaption[0] ? backgroundcaption : nullptr,
-               * mapname = backgroundmapname[0] ? backgroundmapname : nullptr;
-    renderbackgroundview(w, h, caption , backgroundmapshot, mapname, backgroundmapinfo);
+    renderbackgroundview(w, h, backgroundcaption.c_str(), backgroundmapshot, backgroundmapname.c_str(), backgroundmapinfo.c_str());
 }
 
 float loadprogress = 0;
 
-void renderprogressview(int w, int h, float bar, const char *text)   // also used during loading
+static void renderprogressview(int w, int h, float bar, const char *text)   // also used during loading
 {
     hudmatrix.ortho(0, w, h, 0, -1, 1);
     resethudmatrix();
@@ -320,7 +327,9 @@ void renderprogressview(int w, int h, float bar, const char *text)   // also use
             tsz = mw/tw;
         }
         pushhudtranslate(bx+sw, by + (bh - FONTH*tsz)/2, tsz);
-        draw_text(text, 0, 0);
+        //draw_text(text, 0, 0);
+        ttr.fontsize(50);
+        ttr.renderttf(text, {0xFF, 0xFF, 0xFF, 0}, 0, 4);
         pophudmatrix();
     }
     glDisable(GL_BLEND);
@@ -347,8 +356,8 @@ void renderprogress(float bar, const char *text, bool background)   // also used
         }
         lastprogress = ticks;
     }
-    int w = hudw,
-        h = hudh;
+    int w = hudw(),
+        h = hudh();
     if(forceaspect)
     {
         w = static_cast<int>(std::ceil(h*forceaspect));
@@ -365,7 +374,7 @@ void renderprogress(float bar, const char *text, bool background)   // also used
     swapbuffers(false);
 }
 
-bool initwindowpos = false;
+static bool initwindowpos = false;
 
 void setfullscreen(bool enable)
 {
@@ -420,7 +429,7 @@ void screenres(int w, int h)
         initwarning("screen resolution");
     }
 }
-COMMAND(screenres, "ii");
+
 
 static void setgamma(int val)
 {
@@ -431,7 +440,7 @@ static void setgamma(int val)
 }
 
 static int curgamma = 100;
-VARFNP(gamma, reqgamma, 30, 100, 300,
+static VARFNP(gamma, reqgamma, 30, 100, 300,
 {
     if(initing || reqgamma == curgamma)
     {
@@ -443,6 +452,8 @@ VARFNP(gamma, reqgamma, 30, 100, 300,
 
 /* restoregamma: sets gamma to the previous set value, useful for reverting bad-
  * looking gamma trial settings
+ *
+ * used in iengine.h
  */
 void restoregamma()
 {
@@ -479,6 +490,7 @@ void restorevsync()
     }
 }
 
+//used in iengine.h
 void setupscreen()
 {
     //clear prior gl context/screen if present
@@ -534,7 +546,8 @@ void setupscreen()
     uint32_t windowflags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS | flags;
     //create new screen       title          x     y     w     h  flags
     screen = SDL_CreateWindow("Imprimis", winx, winy, winw, winh, windowflags);
-    renderer = SDL_CreateRenderer(screen, -1, 0);
+    ttr.initttf();
+    ttr.openfont("media/interface/font/default.ttf", 24);
 
     if(!screen)
     {
@@ -570,15 +583,16 @@ void setupscreen()
         fatal("failed to create OpenGL context: %s", SDL_GetError());
     }
     SDL_GetWindowSize(screen, &screenw, &screenh);
-    renderw = std::min(scr_w, screenw);
-    renderh = std::min(scr_h, screenh);
-    hudw = screenw;
-    hudh = screenh;
 }
 
 //full reset of renderer
 void resetgl()
 {
+    if(!glslversion)
+    {
+        conoutf(Console_Error, "Cannot reset GL without GL initialized, operation not performed");
+        return;
+    }
     clearchanges(Change_Graphics|Change_Shaders);
 
     renderbackground("resetting OpenGL");
@@ -601,7 +615,7 @@ void resetgl()
 
     inbetweenframes = false;
     //texture reloading
-    if(!reloadtexture(*notexture) ||
+    if(!notexture->reload() ||
        !reloadtexture("<premul>media/interface/logo.png") ||
        !reloadtexture("<premul>media/interface/logo_1024.png") ||
        !reloadtexture("media/interface/background.png") ||
@@ -622,7 +636,6 @@ void resetgl()
     reloadtextures();
     rootworld.allchanged(true);
 }
-COMMAND(resetgl, "");
 
 /* limitfps: uses SDL_Delay to delay a frame, given the time the last frame was
  * rendered and the current time
@@ -681,17 +694,14 @@ void limitfps(int &millis, int curmillis)
     }
 #endif
 
-constexpr int maxfpshistory = 60;
+static constexpr int maxfpshistory = 60;
 
-int fpspos = 0,
-    fpshistory[maxfpshistory];
+int fpspos = 0;
+std::array<int, maxfpshistory> fpshistory;
 
 void resetfpshistory()
 {
-    for(int i = 0; i < maxfpshistory; ++i)
-    {
-        fpshistory[i] = 1;
-    }
+    fpshistory.fill(1);
     fpspos = 0;
 }
 
@@ -706,12 +716,11 @@ void updatefpshistory(int millis)
 
 void getfps(int &fps, int &bestdiff, int &worstdiff)
 {
-    int total = fpshistory[maxfpshistory-1],
+    int total = fpshistory.at(maxfpshistory-1),
         best = total,
         worst = total;
-    for(int i = 0; i < maxfpshistory-1; ++i)
+    for(const int &millis : fpshistory)
     {
-        int millis = fpshistory[i];
         total += millis;
         if(millis < best)
         {
@@ -722,12 +731,21 @@ void getfps(int &fps, int &bestdiff, int &worstdiff)
             worst = millis;
         }
     }
-    fps = (1000*maxfpshistory)/total;
-    bestdiff = 1000/best-fps;
-    worstdiff = fps-1000/worst;
+    if(total) //guard against div by 0
+    {
+        fps = (1000*maxfpshistory)/total;
+        bestdiff = 1000/best-fps;
+        worstdiff = fps-1000/worst;
+    }
+    else
+    {
+        fps = 0;
+        bestdiff = 0;
+        worstdiff = 0;
+    }
 }
 
-void getfpscmd(int *raw)
+void getfpscmd(const int *raw)
 {
     if(*raw)
     {
@@ -740,4 +758,10 @@ void getfpscmd(int *raw)
         intret(fps);
     }
 }
-COMMANDN(getfps, getfpscmd, "i");
+
+void initrenderwindowcmds()
+{
+    addcommand("getfps", reinterpret_cast<identfun>(getfpscmd), "i", Id_Command);
+    addcommand("resetgl", reinterpret_cast<identfun>(resetgl), "", Id_Command);
+    addcommand("screenres", reinterpret_cast<identfun>(screenres), "ii", Id_Command);
+}

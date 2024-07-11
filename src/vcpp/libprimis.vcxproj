@@ -97,7 +97,8 @@
     <ClInclude Include="..\engine\interface\textedit.h" />
     <ClInclude Include="..\engine\interface\ui.h" />
     <ClInclude Include="..\engine\model\animmodel.h" />
-    <ClInclude Include="..\engine\model\hitzone.h" />
+    <ClInclude Include="..\engine\model\gltf.h" />
+    <ClInclude Include="..\engine\model\gltfloader.h" />
     <ClInclude Include="..\engine\model\md5.h" />
     <ClInclude Include="..\engine\model\model.h" />
     <ClInclude Include="..\engine\model\obj.h" />
@@ -111,7 +112,9 @@
     <ClInclude Include="..\engine\render\hdr.h" />
     <ClInclude Include="..\engine\render\hud.h" />
     <ClInclude Include="..\engine\render\imagedata.h" />
+    <ClInclude Include="..\engine\render\lightsphere.h" />
     <ClInclude Include="..\engine\render\octarender.h" />
+    <ClInclude Include="..\engine\render\postfx.h" />
     <ClInclude Include="..\engine\render\radiancehints.h" />
     <ClInclude Include="..\engine\render\renderalpha.h" />
     <ClInclude Include="..\engine\render\rendergl.h" />
@@ -119,9 +122,12 @@
     <ClInclude Include="..\engine\render\rendersky.h" />
     <ClInclude Include="..\engine\render\rendertext.h" />
     <ClInclude Include="..\engine\render\rendertimers.h" />
+    <ClInclude Include="..\engine\render\renderttf.h" />
     <ClInclude Include="..\engine\render\renderwindow.h" />
+    <ClInclude Include="..\engine\render\shaderparam.h" />
     <ClInclude Include="..\engine\render\stain.h" />
     <ClInclude Include="..\engine\render\texture.h" />
+    <ClInclude Include="..\engine\render\vacollect.h" />
     <ClInclude Include="..\engine\render\water.h" />
     <ClInclude Include="..\engine\world\bih.h" />
     <ClInclude Include="..\engine\world\dynlight.h" />
@@ -130,6 +136,7 @@
     <ClInclude Include="..\engine\world\material.h" />
     <ClInclude Include="..\engine\world\mpr.h" />
     <ClInclude Include="..\engine\world\octaedit.h" />
+    <ClInclude Include="..\engine\world\octacube.h" />
     <ClInclude Include="..\engine\world\physics.h" />
     <ClInclude Include="..\engine\world\raycube.h" />
     <ClInclude Include="..\engine\world\worldio.h" />
@@ -153,10 +160,13 @@
     <ClCompile Include="..\engine\interface\textedit.cpp" />
     <ClCompile Include="..\engine\interface\ui.cpp" />
     <ClCompile Include="..\engine\model\animmodel.cpp" />
-    <ClCompile Include="..\engine\model\hitzone.cpp" />
+    <ClCompile Include="..\engine\model\gltf.cpp" />
+    <ClCompile Include="..\engine\model\gltfloader.cpp" />
+    <ClCompile Include="..\engine\model\md5.cpp" />
     <ClCompile Include="..\engine\model\obj.cpp" />
     <ClCompile Include="..\engine\model\ragdoll.cpp" />
     <ClCompile Include="..\engine\model\skelmodel.cpp" />
+    <ClCompile Include="..\engine\model\vertmodel.cpp" />
     <ClCompile Include="..\engine\render\aa.cpp" />
     <ClCompile Include="..\engine\render\ao.cpp" />
     <ClCompile Include="..\engine\render\csm.cpp" />
@@ -164,8 +174,10 @@
     <ClCompile Include="..\engine\render\hdr.cpp" />
     <ClCompile Include="..\engine\render\hud.cpp" />
     <ClCompile Include="..\engine\render\imagedata.cpp" />
+    <ClCompile Include="..\engine\render\lightsphere.cpp" />
     <ClCompile Include="..\engine\render\normal.cpp" />
     <ClCompile Include="..\engine\render\octarender.cpp" />
+    <ClCompile Include="..\engine\render\postfx.cpp" />
     <ClCompile Include="..\engine\render\radiancehints.cpp" />
     <ClCompile Include="..\engine\render\renderalpha.cpp" />
     <ClCompile Include="..\engine\render\rendergl.cpp" />
@@ -175,11 +187,14 @@
     <ClCompile Include="..\engine\render\rendersky.cpp" />
     <ClCompile Include="..\engine\render\rendertext.cpp" />
     <ClCompile Include="..\engine\render\rendertimers.cpp" />
+    <ClCompile Include="..\engine\render\renderttf.cpp" />
     <ClCompile Include="..\engine\render\renderva.cpp" />
     <ClCompile Include="..\engine\render\renderwindow.cpp" />
     <ClCompile Include="..\engine\render\shader.cpp" />
+    <ClCompile Include="..\engine\render\shaderparam.cpp" />
     <ClCompile Include="..\engine\render\stain.cpp" />
     <ClCompile Include="..\engine\render\texture.cpp" />
+    <ClCompile Include="..\engine\render\vacollect.cpp" />
     <ClCompile Include="..\engine\render\water.cpp" />
     <ClCompile Include="..\engine\world\bih.cpp" />
     <ClCompile Include="..\engine\world\dynlight.cpp" />
@@ -190,18 +205,17 @@
     <ClCompile Include="..\engine\world\mpr.cpp" />
     <ClCompile Include="..\engine\world\octaworld.cpp" />
     <ClCompile Include="..\engine\world\octaedit.cpp" />
+    <ClCompile Include="..\engine\world\octacube.cpp" />
     <ClCompile Include="..\engine\world\physics.cpp" />
     <ClCompile Include="..\engine\world\raycube.cpp" />
     <ClCompile Include="..\engine\world\world.cpp" />
     <ClCompile Include="..\engine\world\worldio.cpp" />
     <ClCompile Include="..\shared\geom.cpp" />
     <ClCompile Include="..\shared\glemu.cpp" />
+    <ClCompile Include="..\shared\matrix.cpp" />
     <ClCompile Include="..\shared\stream.cpp" />
     <ClCompile Include="..\shared\tools.cpp" />
     <ClCompile Include="..\shared\zip.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="tesseract.rc" />
   </ItemGroup>
   <ItemGroup>
     <Library Include="..\libprimis-headers\3rdparty\bin\glew32.lib" />

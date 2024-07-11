@@ -30,9 +30,9 @@ namespace mpr
 
     struct Ent
     {
-        physent *ent;
+        const physent *ent;
 
-        Ent(physent *ent) : ent(ent) {}
+        Ent(const physent *ent) : ent(ent) {}
 
         vec center() const;
     };
@@ -40,10 +40,7 @@ namespace mpr
     class EntOBB : public Ent
     {
         public:
-            EntOBB(physent *ent) : Ent(ent)
-            {
-                orient.setyaw(ent->yaw*RAD);
-            }
+            EntOBB(const physent *ent);
 
             vec contactface(const vec &wn, const vec &wdir) const;
             vec localsupportpoint(const vec &ln) const;
@@ -63,7 +60,7 @@ namespace mpr
 
     struct EntFuzzy : Ent
     {
-        EntFuzzy(physent *ent) : Ent(ent) {}
+        EntFuzzy(const physent *ent) : Ent(ent) {}
 
         float left()   const;
         float right()  const;
@@ -75,7 +72,7 @@ namespace mpr
 
     struct EntCylinder : EntFuzzy
     {
-        EntCylinder(physent *ent) : EntFuzzy(ent) {}
+        EntCylinder(const physent *ent) : EntFuzzy(ent) {}
 
         vec contactface(const vec &n, const vec &dir) const;
         vec supportpoint(const vec &n) const;
@@ -83,14 +80,14 @@ namespace mpr
 
     struct EntCapsule : EntFuzzy
     {
-        EntCapsule(physent *ent) : EntFuzzy(ent) {}
+        EntCapsule(const physent *ent) : EntFuzzy(ent) {}
 
         vec supportpoint(const vec &n) const;
     };
 
     struct EntEllipsoid : EntFuzzy
     {
-        EntEllipsoid(physent *ent) : EntFuzzy(ent) {}
+        EntEllipsoid(const physent *ent) : EntFuzzy(ent) {}
 
         vec supportpoint(const vec &dir) const;
     };
@@ -100,23 +97,7 @@ namespace mpr
         vec o, radius;
         matrix3 orient;
 
-        Model(const vec &ent, const vec &center, const vec &radius, int yaw, int pitch, int roll) : o(ent), radius(radius)
-        {
-            orient.identity();
-            if(roll)
-            {
-                orient.rotate_around_y(sincosmod360(roll));
-            }
-            if(pitch)
-            {
-                orient.rotate_around_x(sincosmod360(-pitch));
-            }
-            if(yaw)
-            {
-                orient.rotate_around_z(sincosmod360(-yaw));
-            }
-            o.add(orient.transposedtransform(center));
-        }
+        Model(const vec &ent, const vec &center, const vec &radius, int yaw, int pitch, int roll);
 
         vec center() const;
     };
@@ -145,8 +126,8 @@ namespace mpr
     //templates
     const float boundarytolerance = 1e-3f;
 
-    template<class T, class U>
-    bool collide(const T &p1, const U &p2)
+    template<class T>
+    bool collide(const T &p1, const EntOBB &p2)
     {
         // v0 = center of Minkowski difference
         vec v0 = p2.center().sub(p1.center());
@@ -261,8 +242,8 @@ namespace mpr
         return false;
     }
 
-    template<class T, class U>
-    bool collide(const T &p1, const U &p2, vec *contactnormal, vec *contactpoint1, vec *contactpoint2)
+    template<class T>
+    bool collide(const EntOBB &p1, const T &p2, vec *contactnormal, vec *contactpoint1, vec *contactpoint2)
     {
         // v0 = center of Minkowski sum
         vec v01 = p1.center();

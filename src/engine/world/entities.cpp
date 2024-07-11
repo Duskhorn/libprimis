@@ -1,16 +1,16 @@
 /**
  * @brief Definition of methods in ents.h shared header.
- * 
+ *
  * This file implements the behavior in the ents.h interface header.
  */
 #include "../libprimis-headers/cube.h"
 #include "../../shared/geomexts.h"
 
+#include <memory>
+#include <optional>
+
 #include "entities.h"
-
 #include "bih.h"
-#include "physics.h"
-
 #include "interface/control.h"
 
 #include "model/model.h"
@@ -18,7 +18,7 @@
 
 //extentity
 
-extentity::extentity() : 
+extentity::extentity() :
             flags(0),
             attached(nullptr)
 {
@@ -68,8 +68,8 @@ physent::physent() :
             xradius(4.1f),
             yradius(4.1f),
             zmargin(0),
-            state(ClientState_Alive),
-            editstate(ClientState_Alive),
+            state(0),
+            editstate(0),
             type(PhysEnt_Player),
             collidetype(Collide_Ellipse),
             blocked(false)
@@ -106,7 +106,7 @@ vec physent::headpos(float offset) const
 
 bool physent::crouched() const
 {
-    return fabs(eyeheight - maxheight*crouchheight) < 1e-4f;
+    return std::fabs(eyeheight - maxheight*crouchheight) < 1e-4f;
 }
 
 //modelattach
@@ -206,13 +206,13 @@ void dynent::reset()
 {
     physent::reset();
     stopmoving();
-    for(int i = 0; i < maxanimparts; ++i)
+    for(size_t i = 0; i < maxanimparts; ++i)
     {
         animinterp[i].reset();
     }
 }
 
-vec dynent::abovehead()
+vec dynent::abovehead() const
 {
     return vec(o).addz(aboveeye+4);
 }

@@ -14,9 +14,28 @@
 
 #include "textedit.h"
 #include "render/rendertext.h"
+#include "render/renderttf.h"
+#include "render/shader.h"
+#include "render/shaderparam.h"
 #include "render/texture.h"
 
 // editline
+
+inline void text_bounds(const char *str, int &width, int &height, int maxwidth = -1)
+{
+    float widthf, heightf;
+    text_boundsf(str, widthf, heightf, maxwidth);
+    width = static_cast<int>(std::ceil(widthf));
+    height = static_cast<int>(std::ceil(heightf));
+}
+
+inline void text_pos(const char *str, int cursor, int &cx, int &cy, int maxwidth)
+{
+    float cxf, cyf;
+    text_posf(str, cursor, cxf, cyf, maxwidth);
+    cx = static_cast<int>(cxf);
+    cy = static_cast<int>(cyf);
+}
 
 bool EditLine::empty()
 {
@@ -61,13 +80,13 @@ void EditLine::set(const char *str, int slen)
         slen = std::strlen(str);
         if(!grow(slen, "%s", str))
         {
-            memcpy(text, str, slen + 1);
+            std::memcpy(text, str, slen + 1);
         }
     }
     else
     {
         grow(slen);
-        memcpy(text, str, slen);
+        std::memcpy(text, str, slen);
         text[slen] = '\0';
     }
     len = slen;
@@ -78,8 +97,8 @@ void EditLine::prepend(const char *str)
     int slen = std::strlen(str);
     if(!grow(slen + len, "%s%s", str, text ? text : ""))
     {
-        memmove(&text[slen], text, len + 1);
-        memcpy(text, str, slen + 1);
+        std::memmove(&text[slen], text, len + 1);
+        std::memcpy(text, str, slen + 1);
     }
     len += slen;
 }
@@ -89,12 +108,12 @@ void EditLine::append(const char *str)
     int slen = std::strlen(str);
     if(!grow(len + slen, "%s%s", text ? text : "", str))
     {
-        memcpy(&text[len], str, slen + 1);
+        std::memcpy(&text[len], str, slen + 1);
     }
     len += slen;
 }
 
-bool EditLine::read(stream *f, int chop)
+bool EditLine::read(std::fstream& f, int chop)
 {
     if(chop < 0)
     {
@@ -105,7 +124,7 @@ bool EditLine::read(stream *f, int chop)
         chop++;
     }
     set("");
-    while(len + 1 < chop && f->getline(&text[len], std::min(maxlen, chop) - len))
+    while(len + 1 < chop && f.getline(&text[len], std::min(maxlen, chop) - len))
     {
         len += std::strlen(&text[len]);
         if(len > 0 && text[len-1] == '\n')
@@ -121,7 +140,7 @@ bool EditLine::read(stream *f, int chop)
     if(len + 1 >= chop)
     {
         char buf[Chunk_Size];
-        while(f->getline(buf, sizeof(buf)))
+        while(f.getline(buf, sizeof(buf)))
         {
             int blen = std::strlen(buf);
             if(blen > 0 && buf[blen-1] == '\n')
@@ -152,7 +171,7 @@ void EditLine::del(int start, int count)
     {
         count = len - start - 1;
     }
-    memmove(&text[start], &text[start+count], len + 1 - (start + count));
+    std::memmove(&text[start], &text[start+count], len + 1 - (start + count));
     len -= count;
 }
 
@@ -174,12 +193,12 @@ void EditLine::insert(char *str, int start, int count)
     }
     start = std::clamp(start, 0, len);
     grow(len + count, "%s", text ? text : "");
-    memmove(&text[start + count], &text[start], len - start + 1);
-    memcpy(&text[start], str, count);
+    std::memmove(&text[start + count], &text[start], len - start + 1);
+    std::memcpy(&text[start], str, count);
     len += count;
 }
 
-void EditLine::combinelines(vector<EditLine> &src)
+void EditLine::combinelines(std::vector<EditLine> &src)
 {
     if(src.empty())
     {
@@ -187,7 +206,7 @@ void EditLine::combinelines(vector<EditLine> &src)
     }
     else
     {
-        for(int i = 0; i < src.length(); i++)
+        for(uint i = 0; i < src.size(); i++)
         {
             if(i)
             {
@@ -209,21 +228,22 @@ void EditLine::combinelines(vector<EditLine> &src)
 
 bool Editor::empty()
 {
-    return lines.length() == 1 && lines[0].empty();
+    return lines.size() == 1 && lines[0].empty();
 }
 
 void Editor::clear(const char *init)
 {
     cx = cy = 0;
     mark(false);
-    for(int i = 0; i < lines.length(); i++)
+    for(EditLine &i : lines)
     {
-        lines[i].clear();
+        i.clear();
     }
-    lines.shrink(0);
+    lines.clear();
     if(init)
     {
-        lines.add().set(init);
+        lines.emplace_back();
+        lines.back().set(init);
     }
 }
 
@@ -254,6 +274,12 @@ void Editor::setfile(const char *fname)
     }
 }
 
+bool Editor::readback(std::fstream& file)
+{
+    lines.emplace_back();
+    return lines.back().read(file, maxx) && (maxy < 0 || static_cast<int>(lines.size()) <= maxy);
+}
+
 void Editor::load()
 {
     if(!filename)
@@ -261,19 +287,22 @@ void Editor::load()
         return;
     }
     clear(nullptr);
-    stream *file = openutf8file(filename, "r");
+    std::fstream file;
+    file.open(filename);
     if(file)
     {
-        while(lines.add().read(file, maxx) && (maxy < 0 || lines.length() <= maxy))
+        while(readback(file))
         {
-            lines.pop().clear();
+            lines.back().clear();
+            lines.pop_back();
         }
-        delete file;
     }
     if(lines.empty())
     {
-        lines.add().set("");
+        lines.emplace_back();
+        lines.back().set("");
     }
+    file.close();
 }
 
 void Editor::save()
@@ -282,16 +311,17 @@ void Editor::save()
     {
         return;
     }
-    stream *file = openutf8file(filename, "w");
+    std::fstream file;
+    file.open(filename);
     if(!file)
     {
         return;
     }
-    for(int i = 0; i < lines.length(); i++)
+    for(uint i = 0; i < lines.size(); i++)
     {
-        file->putline(lines[i].text);
+        file << lines[i].text;
     }
-    delete file;
+    file.close();
 }
 
 void Editor::mark(bool enable)
@@ -310,12 +340,12 @@ void Editor::selectall()
 // also ensures that cy is always within lines[] and cx is valid
 bool Editor::region(int &sx, int &sy, int &ex, int &ey)
 {
-    int n = lines.length();
+    uint n = lines.size();
     if(cy < 0)
     {
         cy = 0;
     }
-    else if(cy >= n)
+    else if(cy >= static_cast<int>(n))
     {
         cy = n-1;
     }
@@ -334,7 +364,7 @@ bool Editor::region(int &sx, int &sy, int &ex, int &ey)
         {
             my = 0;
         }
-        else if(my >= n)
+        else if(my >= static_cast<int>(n))
         {
             my = n-1;
         }
@@ -377,12 +407,12 @@ bool Editor::region()
 // also ensures that cy is always within lines[] and cx is valid
 EditLine &Editor::currentline()
 {
-    int n = lines.length();
+    uint n = lines.size();
     if(cy < 0)
     {
         cy = 0;
     }
-    else if(cy >= n)
+    else if(cy >= static_cast<int>(n))
     {
         cy = n-1;
     }
@@ -408,7 +438,7 @@ void Editor::copyselectionto(Editor *b)
     region(sx, sy, ex, ey);
     for(int i = 0; i < 1+ey-sy; ++i)
     {
-        if(b->maxy != -1 && b->lines.length() >= b->maxy)
+        if(b->maxy != -1 && static_cast<int>(b->lines.size()) >= b->maxy)
         {
             break;
         }
@@ -428,27 +458,29 @@ void Editor::copyselectionto(Editor *b)
         {
             len = ex;
         }
-        b->lines.add().set(line, len);
+        b->lines.emplace_back();
+        b->lines.back().set(line, len);
     }
     if(b->lines.empty())
     {
-        b->lines.add().set("");
+        b->lines.emplace_back();
+        b->lines.back().set("");
     }
 }
 
 char *Editor::tostring()
 {
     int len = 0;
-    for(int i = 0; i < lines.length(); i++)
+    for(uint i = 0; i < lines.size(); i++)
     {
         len += lines[i].len + 1;
     }
     char *str = newstring(len);
     int offset = 0;
-    for(int i = 0; i < lines.length(); i++)
+    for(uint i = 0; i < lines.size(); i++)
     {
         EditLine &l = lines[i];
-        memcpy(&str[offset], l.text, l.len);
+        std::memcpy(&str[offset], l.text, l.len);
         offset += l.len;
         str[offset++] = '\n';
     }
@@ -458,7 +490,7 @@ char *Editor::tostring()
 
 char *Editor::selectiontostring()
 {
-    vector<char> buf;
+    std::vector<char> buf;
     int sx, sy, ex, ey;
     region(sx, sy, ex, ey);
     for(int i = 0; i < 1+ey-sy; ++i)
@@ -479,11 +511,14 @@ char *Editor::selectiontostring()
         {
             len = ex;
         }
-        buf.put(line, len);
-        buf.add('\n');
+        for(int i = 0; i < len; ++i)
+        {
+            buf.push_back(line[i]);
+        }
+        buf.push_back('\n');
     }
-    buf.add('\0');
-    return newstring(buf.getbuf(), buf.length()-1);
+    buf.push_back('\0');
+    return newstring(buf.data(), buf.size()-1);
 }
 
 void Editor::removelines(int start, int count)
@@ -492,7 +527,7 @@ void Editor::removelines(int start, int count)
     {
         lines[start+i].clear();
     }
-    lines.remove(start, count);
+    lines.erase(lines.begin() + start, lines.begin() + start + count);
 }
 
 bool Editor::del() // removes the current selection (if any)
@@ -537,13 +572,14 @@ bool Editor::del() // removes the current selection (if any)
     }
     if(lines.empty())
     {
-        lines.add().set("");
+        lines.emplace_back();
+        lines.back().set("");
     }
     mark(false);
     cx = sx;
     cy = sy;
     EditLine &current = currentline();
-    if(cx >= current.len && cy < lines.length() - 1)
+    if(cx >= current.len && cy < static_cast<int>(lines.size()) - 1)
     {
         current.append(lines[cy+1].text);
         removelines(cy + 1, 1);
@@ -561,8 +597,8 @@ void Editor::insert(char ch)
         {
             EditLine newline(&current.text[cx]);
             current.chop(cx);
-            cy = std::min(lines.length(), cy+1);
-            lines.insert(cy, newline);
+            cy = std::min(static_cast<int>(lines.size()), cy+1);
+            lines.insert(lines.begin() + cy, newline);
         }
         else
         {
@@ -592,7 +628,7 @@ void Editor::insert(const char *s)
     }
 }
 
-void Editor::insertallfrom(Editor *b)
+void Editor::insertallfrom(const Editor * const b)
 {
     if(b==this)
     {
@@ -601,7 +637,7 @@ void Editor::insertallfrom(Editor *b)
 
     del();
 
-    if(b->lines.length() == 1 || maxy == 1)
+    if(b->lines.size() == 1 || maxy == 1)
     {
         EditLine &current = currentline();
         char *str = b->lines[0].text;
@@ -623,20 +659,20 @@ void Editor::insertallfrom(Editor *b)
     }
     else
     {
-        for(int i = 0; i < b->lines.length(); i++)
+        for(uint i = 0; i < b->lines.size(); i++)
         {
             if(!i)
             {
                 lines[cy++].append(b->lines[i].text);
             }
-            else if(i >= b->lines.length())
+            else if(i >= b->lines.size())
             {
                 cx = b->lines[i].len;
                 lines[cy].prepend(b->lines[i].text);
             }
-            else if(maxy < 0 || lines.length() < maxy)
+            else if(maxy < 0 || static_cast<int>(lines.size()) < maxy)
             {
-                lines.insert(cy++, EditLine(b->lines[i].text));
+                lines.insert(lines.begin() + cy++, EditLine(b->lines[i].text));
             }
         }
     }
@@ -661,7 +697,7 @@ void Editor::key(int code)
             if(linewrap)
             {
                 int x, y;
-                char *str = currentline().text;
+                const char *str = currentline().text;
                 text_pos(str, cx+1, x, y, pixelwidth);
                 if(y > 0)
                 {
@@ -677,7 +713,7 @@ void Editor::key(int code)
             if(linewrap)
             {
                 int x, y, width, height;
-                char *str = currentline().text;
+                const char *str = currentline().text;
                 text_pos(str, cx, x, y, pixelwidth);
                 text_bounds(str, width, height, pixelwidth);
                 y += FONTH;
@@ -729,7 +765,7 @@ void Editor::key(int code)
                 {
                     current.del(cx, 1);
                 }
-                else if(cy < lines.length()-1)
+                else if(cy < static_cast<int>(lines.size())-1)
                 {   //combine with next line
                     current.append(lines[cy+1].text);
                     removelines(cy+1, 1);
@@ -785,7 +821,7 @@ void Editor::hit(int hitx, int hity, bool dragged)
 {
     int maxwidth = linewrap?pixelwidth:-1,
         h = 0;
-    for(int i = scrolly; i < lines.length(); i++)
+    for(uint i = scrolly; i < lines.size(); i++)
     {
         int width, height;
         text_bounds(lines[i].text, width, height, maxwidth);
@@ -848,7 +884,7 @@ void Editor::draw(int x, int y, int color, bool hit)
         int psx, psy, pex, pey;
         text_pos(lines[sy].text, sx, psx, psy, maxwidth);
         text_pos(lines[ey].text, ex, pex, pey, maxwidth);
-        int maxy = lines.length(),
+        int maxy = static_cast<int>(lines.size()),
             h = 0;
         for(int i = scrolly; i < maxy; i++)
         {
@@ -889,7 +925,7 @@ void Editor::draw(int x, int y, int color, bool hit)
             hudnotextureshader->set();
             gle::colorub(0xA0, 0x80, 0x80);
             gle::defvertex(2);
-            gle::begin(GL_QUADS);
+            gle::begin(GL_TRIANGLE_FAN);
             if(psy == pey)
             {
                 gle::attribf(x+psx, y+psy);
@@ -919,7 +955,7 @@ void Editor::draw(int x, int y, int color, bool hit)
     }
 
     int h = 0;
-    for(int i = scrolly; i < lines.length(); i++)
+    for(uint i = scrolly; i < lines.size(); i++)
     {
         int width, height;
         text_bounds(lines[i].text, width, height, maxwidth);
@@ -927,7 +963,8 @@ void Editor::draw(int x, int y, int color, bool hit)
         {
             break;
         }
-        draw_text(lines[i].text, x, y+h, color>>16, (color>>8)&0xFF, color&0xFF, 0xFF, hit&&(cy==i)?cx:-1, maxwidth);
+        //draw_text(lines[i].text, x, y+h, color>>16, (color>>8)&0xFF, color&0xFF, 0xFF, hit&&(static_cast<uint>(cy)==i)?cx:-1, maxwidth);
+        ttr.renderttf(lines[i].text, {static_cast<uchar>(color>>16), static_cast<uchar>((color>>8)&0xFF), static_cast<uchar>(color&0xFF), 0}, x, y+h);
         if(linewrap && height > FONTH) // line wrap indicator
         {
             hudnotextureshader->set();
@@ -946,24 +983,25 @@ void Editor::draw(int x, int y, int color, bool hit)
 
 // global
 
-vector<Editor *> editors;
+std::vector<Editor *> editors;
 Editor *textfocus = nullptr;
 
 void readyeditors()
 {
-    for(int i = 0; i < editors.length(); i++)
+    for(Editor * i : editors)
     {
-        editors[i]->active = (editors[i]->mode==Editor_Forever);
+        i->active = (i->mode==Editor_Forever);
     }
 }
 
 void flusheditors()
 {
-    for(int i = editors.length(); --i >=0;) //note reverse iteration
+    for(int i = editors.size(); --i >=0;) //note reverse iteration
     {
         if(!editors[i]->active)
         {
-            Editor *e = editors.remove(i);
+            Editor *e = editors.at(i);
+            editors.erase(editors.begin() + i);
             if(e == textfocus)
             {
                 textfocus = nullptr;
@@ -973,11 +1011,11 @@ void flusheditors()
     }
 }
 
-Editor *useeditor(const char *name, int mode, bool focus, const char *initval)
+Editor *useeditor(std::string name, int mode, bool focus, const char *initval)
 {
-    for(int i = 0; i < editors.length(); i++)
+    for(uint i = 0; i < editors.size(); i++)
     {
-        if(!std::strcmp(editors[i]->name, name))
+        if(editors[i]->name == name)
         {
             Editor *e = editors[i];
             if(focus)
@@ -993,7 +1031,7 @@ Editor *useeditor(const char *name, int mode, bool focus, const char *initval)
         return nullptr;
     }
     Editor *e = new Editor(name, mode, initval);
-    editors.add(e);
+    editors.push_back(e);
     if(focus)
     {
         textfocus = e;
@@ -1001,35 +1039,26 @@ Editor *useeditor(const char *name, int mode, bool focus, const char *initval)
     return e;
 }
 
-#define TEXTCOMMAND(f, s, d, body) ICOMMAND(f, s, d,\
-    if(!textfocus || identflags&Idf_Overridden) return;\
-    body\
-)
-
 void textlist()
 {
-    vector<char> s;
-    for(int i = 0; i < editors.length(); i++)
+    if(!textfocus)
+    {
+        return;
+    }
+    std::string s;
+    for(uint i = 0; i < editors.size(); i++)
     {
         if(i > 0)
         {
-            s.put(", ", 2);
+            s.push_back(',');
+            s.push_back(' ');
         }
-        s.put(editors[i]->name, std::strlen(editors[i]->name));
+        s.append(editors[i]->name);
     }
-    s.add('\0');
-    result(s.getbuf());
+    result(s.c_str());
 }
-COMMAND(textlist, "");
 
-TEXTCOMMAND(textshow, "", (), // @DEBUG return the start of the buffer
-    EditLine line;
-    line.combinelines(textfocus->lines);
-    result(line.text);
-    line.clear();
-);
-
-void textfocuscmd(char *name, int *mode)
+void textfocuscmd(const char *name, const int *mode)
 {
     if(identflags&Idf_Overridden)
     {
@@ -1039,37 +1068,32 @@ void textfocuscmd(char *name, int *mode)
     {
         useeditor(name, *mode<=0 ? Editor_Forever : *mode, true);
     }
-    else if(editors.length() > 0)
+    else if(editors.size() > 0)
     {
-        result(editors.last()->name);
+        result(editors.back()->name.c_str());
     }
 }
-COMMANDN(textfocus, textfocuscmd, "si");
 
-TEXTCOMMAND(textprev, "", (), editors.insert(0, textfocus); editors.pop();); // return to the previous editor
-TEXTCOMMAND(textmode, "i", (int *m), // (1= keep while focused, 2= keep while used in gui, 3= keep forever (i.e. until mode changes)) topmost editor, return current setting if no args
-    if(*m)
-    {
-        textfocus->mode = *m;
-    }
-    else
-    {
-        intret(textfocus->mode);
-    }
-);
-
-void textsave(char *file)
+void textsave(const char *file)
 {
+    if(!textfocus)
+    {
+        return;
+    }
     if(*file)
     {
         textfocus->setfile(copypath(file));
     }
     textfocus->save();
 }
-COMMAND(textsave, "s");
 
-void textload(char *file)
+
+void textload(const char *file)
 {
+    if(!textfocus)
+    {
+        return;
+    }
     if(*file)
     {
         textfocus->setfile(copypath(file));
@@ -1080,51 +1104,47 @@ void textload(char *file)
         result(textfocus->filename);
     }
 }
-COMMAND(textload, "s");
 
-void textinit(char *name, char *file, char *initval)
+
+void textinit(std::string name, char *file, char *initval)
 {
     if(identflags&Idf_Overridden)
     {
         return;
     }
     Editor *e = nullptr;
-    for(int i = 0; i < editors.length(); i++)
+    for(Editor *i : editors)
     {
-        if(!std::strcmp(editors[i]->name, name))
+        if(i->name == name)
         {
-            e = editors[i];
+            e = i;
             break;
         }
     }
-    if(e && e->rendered && !e->filename && *file && (e->lines.empty() || (e->lines.length() == 1 && !std::strcmp(e->lines[0].text, initval))))
+    if(e && e->rendered && !e->filename && *file && (e->lines.empty() || (e->lines.size() == 1 && !std::strcmp(e->lines[0].text, initval))))
     {
         e->setfile(copypath(file));
         e->load();
     }
 }
-COMMAND(textinit, "sss"); // loads into named editor if no file assigned and editor has been rendered
 
-static const char * pastebuffer = "#pastebuffer";
+const std::string pastebuffer = "#pastebuffer";
 
-TEXTCOMMAND(textcopy, "", (), Editor *b = useeditor(pastebuffer, Editor_Forever, false); textfocus->copyselectionto(b););
-TEXTCOMMAND(textpaste, "", (), Editor *b = useeditor(pastebuffer, Editor_Forever, false); textfocus->insertallfrom(b););
-TEXTCOMMAND(textmark, "i", (int *m),  // (1=mark, 2=unmark), return current mark setting if no args
-    if(*m)
-    {
-        textfocus->mark(*m==1);
-    }
-    else
-    {
-        intret(textfocus->region() ? 1 : 2);
-    }
-);
-TEXTCOMMAND(textselectall, "", (), textfocus->selectall(););
-TEXTCOMMAND(textclear, "", (), textfocus->clear(););
-TEXTCOMMAND(textcurrentline, "",  (), result(textfocus->currentline().text););
-
-TEXTCOMMAND(textexec, "i", (int *selected), // execute script commands from the buffer (0=all, 1=selected region only)
-    char *script = *selected ? textfocus->selectiontostring() : textfocus->tostring();
-    execute(script);
-    delete[] script;
-);
+void inittextcmds()
+{
+    addcommand("textinit", reinterpret_cast<identfun>(textinit), "sss", Id_Command); // loads into named editor if no file assigned and editor has been rendered
+    addcommand("textlist", reinterpret_cast<identfun>(textlist), "", Id_Command);
+    addcommand("textshow", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; /* @DEBUG return the start of the buffer*/ EditLine line; line.combinelines(textfocus->lines); result(line.text); line.clear();; }), "", Id_Command);
+    addcommand("textfocus", reinterpret_cast<identfun>(textfocuscmd), "si", Id_Command);
+    addcommand("textprev", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; editors.insert(editors.begin(), textfocus); editors.pop_back();; }), "", Id_Command);; // return to the previous editor
+    addcommand("textmode", reinterpret_cast<identfun>(+[] (int *m) { if(!textfocus || identflags&Idf_Overridden) return; /* (1= keep while focused, 2= keep while used in gui, 3= keep forever (i.e. until mode changes)) topmost editor, return current setting if no args*/ if(*m) { textfocus->mode = *m; } else { intret(textfocus->mode); }; }), "i", Id_Command);
+    addcommand("textsave", reinterpret_cast<identfun>(textsave), "s", Id_Command);
+    addcommand("textload", reinterpret_cast<identfun>(textload), "s", Id_Command);
+    addcommand("textcopy", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; Editor *b = useeditor(pastebuffer, Editor_Forever, false); textfocus->copyselectionto(b);; }), "", Id_Command);;
+    addcommand("textpaste", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; Editor *b = useeditor(pastebuffer, Editor_Forever, false); textfocus->insertallfrom(b);; }), "", Id_Command);;
+    addcommand("textmark", reinterpret_cast<identfun>(+[] (int *m) { if(!textfocus || identflags&Idf_Overridden) return; /* (1=mark, 2=unmark), return current mark setting if no args*/ if(*m) { textfocus->mark(*m==1); } else { intret(textfocus->region() ? 1 : 2); }; }), "i", Id_Command);;
+    addcommand("textselectall", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; textfocus->selectall();; }), "", Id_Command);;
+    addcommand("textclear", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; textfocus->clear();; }), "", Id_Command);;
+    addcommand("textcurrentline", reinterpret_cast<identfun>(+[] () { if(!textfocus || identflags&Idf_Overridden) return; result(textfocus->currentline().text);; }), "", Id_Command);;
+    addcommand("textexec", reinterpret_cast<identfun>(+[] (int *selected) { if(!textfocus || identflags&Idf_Overridden) return; /* execute script commands from the buffer (0=all, 1=selected region only)*/ char *script = *selected ? textfocus->selectiontostring() : textfocus->tostring(); execute(script); delete[] script;; }), "i", Id_Command);
+}

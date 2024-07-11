@@ -19,7 +19,6 @@
 #include "light.h"
 #include "octaedit.h"
 #include "octaworld.h"
-#include "physics.h"
 #include "raycube.h"
 
 #include "interface/console.h"
@@ -31,14 +30,22 @@
 #include "render/rendergl.h"
 #include "render/renderlights.h"
 #include "render/renderva.h"
+#include "render/shader.h"
+#include "render/shaderparam.h"
 #include "render/texture.h"
 
+#include "heightmap.h"
 #include "material.h"
 #include "world.h"
 
-bool boxoutline = false;
+struct prefabheader
+{
+    char magic[4];
+    int version;
+};
 
-void boxs(int orient, vec o, const vec &s, float size)
+//used in iengine.h
+void boxs(int orient, vec o, const vec &s, float size, bool boxoutline)
 {
     int d  = DIMENSION(orient),
         dc = DIM_COORD(orient);
@@ -77,7 +84,8 @@ void boxs(int orient, vec o, const vec &s, float size)
     xtraverts += gle::end();
 }
 
-void boxs(int orient, vec origin, const vec &s)
+//used in iengine.h
+void boxs(int orient, vec origin, const vec &s, bool boxoutline)
 {
     int d  = DIMENSION(orient),
         dc = DIM_COORD(orient);
@@ -95,16 +103,18 @@ void boxs(int orient, vec origin, const vec &s)
     xtraverts += gle::end();
 }
 
-void boxs3D(const vec &origin, vec s, int g)
+//used in iengine.h
+void boxs3D(const vec &origin, vec s, int g, bool boxoutline)
 {
     s.mul(g); //multiply displacement by g(ridpower)
     for(int i = 0; i < 6; ++i) //for each face
     {
-        boxs(i, origin, s);
+        boxs(i, origin, s, boxoutline);
     }
 }
 
-void boxsgrid(int orient, vec origin, vec s, int g)
+//used in iengine.h
+void boxsgrid(int orient, vec origin, vec s, int g, bool boxoutline)
 {
     int d  = DIMENSION(orient),
         dc = DIM_COORD(orient);
@@ -137,7 +147,39 @@ void boxsgrid(int orient, vec origin, vec s, int g)
     xtraverts += gle::end();
 }
 
-selinfo sel, lastsel, savedsel;
+selinfo sel, lastsel; //lastsel is used only in iengine
+static selinfo savedsel;
+
+bool selinfo::validate()
+{
+    if(grid <= 0 || grid >= rootworld.mapsize())
+    {
+        return false;
+    }
+    if(o.x >= rootworld.mapsize() || o.y >= rootworld.mapsize() || o.z >= rootworld.mapsize())
+    {
+        return false;
+    }
+    if(o.x < 0)
+    {
+        s.x -= (grid - 1 - o.x)/grid;
+        o.x = 0;
+    }
+    if(o.y < 0)
+    {
+        s.y -= (grid - 1 - o.y)/grid;
+        o.y = 0;
+    }
+    if(o.z < 0)
+    {
+        s.z -= (grid - 1 - o.z)/grid;
+        o.z = 0;
+    }
+    s.x = std::clamp(s.x, 0, (rootworld.mapsize() - o.x)/grid);
+    s.y = std::clamp(s.y, 0, (rootworld.mapsize() - o.y)/grid);
+    s.z = std::clamp(s.z, 0, (rootworld.mapsize() - o.z)/grid);
+    return s.x > 0 && s.y > 0 && s.z > 0;
+}
 
 int orient = 0,
     gridsize = 8;
@@ -147,8 +189,7 @@ ivec cor, lastcor,
 bool editmode     = false,
      multiplayer  = false,
      allowediting = false,
-     havesel      = false,
-     hmapsel      = false;
+     havesel      = false;
 int horient  = 0,
     entmoving = 0;
 
@@ -190,23 +231,6 @@ VARF(dragging, 0, 0, 1,
 
 int moving = 0;
 
-void movingcmd(int *n)
-{
-    if(*n >= 0)
-    {
-        if(!*n || (moving<=1 && !pointinsel(sel, vec(cur).add(1))))
-        {
-            moving = 0;
-        }
-        else if(!moving)
-        {
-            moving = 1;
-        }
-    }
-    intret(moving);
-}
-COMMANDN(moving, movingcmd, "b");
-
 VARF(gridpower, 0, 3, 12,
 {
     if(dragging)
@@ -214,9 +238,9 @@ VARF(gridpower, 0, 3, 12,
         return;
     }
     gridsize = 1<<gridpower;
-    if(gridsize>=worldsize)
+    if(gridsize>=rootworld.mapsize())
     {
-        gridsize = worldsize/2;
+        gridsize = rootworld.mapsize()/2;
     }
     cancelsel();
 });
@@ -225,16 +249,17 @@ VAR(passthroughsel, 0, 0, 1);
 VAR(selectcorners, 0, 0, 1);
 VARF(hmapedit, 0, 0, 1, horient = sel.orient);
 
-void forcenextundo() { lastsel.orient = -1; }
-
-namespace hmap { void cancel(); }
+void forcenextundo()
+{
+    lastsel.orient = -1;
+}
 
 void cubecancel()
 {
     havesel = false;
     moving = dragging = hmapedit = passthroughsel = 0;
     forcenextundo();
-    hmap::cancel();
+    hmapcancel();
 }
 
 void cancelsel()
@@ -243,9 +268,10 @@ void cancelsel()
     entcancel();
 }
 
+//used in iengine
 bool haveselent()
 {
-    return entgroup.length() > 0;
+    return entgroup.size() > 0;
 }
 
 bool noedit(bool inview, bool msg)
@@ -283,72 +309,6 @@ void reorient()
     sel.orient = orient;
 }
 
-void selextend()
-{
-    if(noedit(true))
-    {
-        return;
-    }
-    for(int i = 0; i < 3; ++i)
-    {
-        if(cur[i]<sel.o[i])
-        {
-            sel.s[i] += (sel.o[i]-cur[i])/sel.grid;
-            sel.o[i] = cur[i];
-        }
-        else if(cur[i]>=sel.o[i]+sel.s[i]*sel.grid)
-        {
-            sel.s[i] = (cur[i]-sel.o[i])/sel.grid+1;
-        }
-    }
-}
-
-COMMAND(entcancel, "");
-COMMAND(cubecancel, "");
-COMMAND(cancelsel, "");
-COMMAND(reorient, "");
-COMMAND(selextend, "");
-
-void selmoved()
-{
-    if(noedit(true))
-    {
-        return;
-    }
-    intret(sel.o != savedsel.o ? 1 : 0);
-}
-COMMAND(selmoved, "");
-
-void selsave()
-{
-    if(noedit(true))
-    {
-        return;
-    }
-    savedsel = sel;
-}
-COMMAND(selsave, "");
-
-void selrestore()
-{
-    if(noedit(true))
-    {
-        return;
-    }
-    sel = savedsel;
-}
-COMMAND(selrestore, "");
-
-void selswap()
-{
-    if(noedit(true))
-    {
-        return;
-    }
-    std::swap(sel, savedsel);
-}
-COMMAND(selswap, "");
-
 ///////// selection support /////////////
 
 cube &blockcube(int x, int y, int z, const block3 &b, int rgrid) // looks up a world cube, based on coordinates mapped by the block
@@ -373,62 +333,40 @@ cube &blockcube(int x, int y, int z, const block3 &b, int rgrid) // looks up a w
 int selchildcount = 0,
     selchildmat = -1;
 
-void haveselcmd()
-{
-    intret(havesel ? selchildcount : 0);
-}
-COMMANDN(havesel, haveselcmd, "");
-
-void selchildcountcmd()
-{
-    if(selchildcount < 0)
-    {
-        result(tempformatstring("1/%d", -selchildcount));
-    }
-    else
-    {
-        intret(selchildcount);
-    }
-}
-COMMANDN(selchildcount, selchildcountcmd, "");
-
-void selchildmatcmd(char *prefix)
-{
-    if(selchildmat > 0)
-    {
-        result(getmaterialdesc(selchildmat, prefix));
-    }
-}
-COMMANDN(selchildmat, selchildmatcmd, "s");
-
-void countselchild(cube *c, const ivec &cor, int size)
+//used in iengine.h
+void countselchild(const std::array<cube, 8> &c, const ivec &cor, int size)
 {
     ivec ss = ivec(sel.s).mul(sel.grid);
-    LOOP_OCTA_BOX_SIZE(cor, size, sel.o, ss)
+    uchar possible = octaboxoverlap(cor, size, sel.o, ivec(sel.o).add(ss));
+    for(int i = 0; i < 8; ++i)
     {
-        ivec o(i, cor, size);
-        if(c[i].children)
+        if(possible&(1<<i))
         {
-            countselchild(c[i].children, o, size/2);
-        }
-        else
-        {
-            selchildcount++;
-            if(c[i].material != Mat_Air && selchildmat != Mat_Air)
+            ivec o(i, cor, size);
+            if(c[i].children)
             {
-                if(selchildmat < 0)
+                countselchild(*(c[i].children), o, size/2);
+            }
+            else
+            {
+                selchildcount++;
+                if(c[i].material != Mat_Air && selchildmat != Mat_Air)
                 {
-                    selchildmat = c[i].material;
-                }
-                else if(selchildmat != c[i].material)
-                {
-                    selchildmat = Mat_Air;
+                    if(selchildmat < 0)
+                    {
+                        selchildmat = c[i].material;
+                    }
+                    else if(selchildmat != c[i].material)
+                    {
+                        selchildmat = Mat_Air;
+                    }
                 }
             }
         }
     }
 }
 
+//used in iengine.h
 void normalizelookupcube(const ivec &o)
 {
     if(lusize>gridsize)
@@ -446,6 +384,7 @@ void normalizelookupcube(const ivec &o)
     lusize = gridsize;
 }
 
+//used in iengine.h
 void updateselection()
 {
     sel.o.x = std::min(lastcur.x, cur.x);
@@ -473,16 +412,9 @@ bool editmoveplane(const vec &o, const vec &ray, int d, float off, vec &handle, 
     return true;
 }
 
-namespace hmap
-{
-    bool isheightmap(int o, int d, bool empty, cube &c);
-}
-
 //////////// ready changes to vertex arrays ////////////
 
-static bool haschanged = false;
-
-static void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor, int size)
+static void readychanges(const ivec &bbmin, const ivec &bbmax, std::array<cube, 8> &c, const ivec &cor, int size)
 {
     LOOP_OCTA_BOX(cor, size, bbmin, bbmax)
     {
@@ -512,7 +444,7 @@ static void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const iv
             }
             else
             {
-                readychanges(bbmin, bbmax, c[i].children, o, size/2);
+                readychanges(bbmin, bbmax, *(c[i].children), o, size/2);
             }
         }
         else
@@ -522,18 +454,18 @@ static void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const iv
     }
 }
 
-void commitchanges(bool force)
+void cubeworld::commitchanges(bool force)
 {
     if(!force && !haschanged)
     {
         return;
     }
     haschanged = false;
-    int oldlen = valist.length();
+    int oldlen = valist.size();
     resetclipplanes();
     entitiesinoctanodes();
     inbetweenframes = false;
-    rootworld.octarender();
+    octarender();
     inbetweenframes = true;
     setupmaterials(oldlen);
     clearshadowcache();
@@ -542,7 +474,7 @@ void commitchanges(bool force)
 
 void cubeworld::changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
-    readychanges(bbmin, bbmax, worldroot, ivec(0, 0, 0), worldsize/2);
+    readychanges(bbmin, bbmax, *worldroot, ivec(0, 0, 0), mapsize()/2);
     haschanged = true;
 
     if(commit)
@@ -553,11 +485,11 @@ void cubeworld::changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 
 void cubeworld::changed(const block3 &sel, bool commit)
 {
-    if(sel.s.iszero())
+    if(!sel.s)
     {
         return;
     }
-    readychanges(ivec(sel.o).sub(1), ivec(sel.s).mul(sel.grid).add(sel.o).add(1), worldroot, ivec(0, 0, 0), worldsize/2);
+    readychanges(ivec(sel.o).sub(1), ivec(sel.s).mul(sel.grid).add(sel.o).add(1), *worldroot, ivec(0, 0, 0), mapsize()/2);
     haschanged = true;
     if(commit)
     {
@@ -578,7 +510,7 @@ static void copycube(const cube &src, cube &dst)
         dst.children = newcubes(faceempty);
         for(int i = 0; i < 8; ++i)
         {
-            copycube(src.children[i], dst.children[i]);
+            copycube((*src.children)[i], (*dst.children)[i]);
         }
     }
 }
@@ -589,11 +521,13 @@ void pastecube(const cube &src, cube &dst)
     copycube(src, dst);
 }
 
+//used in iengine.h
 void blockcopy(const block3 &s, int rgrid, block3 *b)
 {
     *b = s;
     cube *q = b->c();
-    LOOP_XYZ(s, rgrid, copycube(c, *q++));
+    uint i = 0;
+    LOOP_XYZ(s, rgrid, copycube(c, q[i]); i++);
 }
 
 block3 *blockcopy(const block3 &s, int rgrid)
@@ -614,9 +548,11 @@ block3 *blockcopy(const block3 &s, int rgrid)
 void freeblock(block3 *b, bool alloced = true)
 {
     cube *q = b->c();
+    uint j = 0;
     for(int i = 0; i < b->size(); ++i)
     {
-        (*q++).discardchildren(); //note: incrementing pointer
+        (q[j]).discardchildren();
+        j++;
     }
     if(alloced)
     {
@@ -624,9 +560,19 @@ void freeblock(block3 *b, bool alloced = true)
     }
 }
 
-void selgridmap(const selinfo &sel, uchar *g)                           // generates a map of the cube sizes at each grid point
+void selgridmap(const selinfo &sel, uchar *g)
 {
-    LOOP_XYZ(sel, -sel.grid, (*g++ = BITSCAN(lusize), static_cast<void>(c)));
+    for(int z = 0; z < sel.s[D[DIMENSION(sel.orient)]]; ++z)
+    {
+        for(int y = 0; y < sel.s[C[DIMENSION(sel.orient)]]; ++y)
+        {
+            for(int x = 0; x < sel.s[R[DIMENSION(sel.orient)]]; ++x)
+            {
+                blockcube(x,y,z,sel,-sel.grid);
+                *g++ = BITSCAN(lusize);
+            }
+        }
+    }
 }
 
 void freeundo(undoblock *u)
@@ -650,15 +596,17 @@ static int undosize(undoblock *u)
         cube *q = b->c();
         int size = b->size(),
             total = size;
+        uint i = 0;
         for(int j = 0; j < size; ++j)
         {
-            total += familysize(*q++)*sizeof(cube);
+            total += familysize(q[i])*sizeof(cube);
+            i++;
         }
         return total;
     }
 }
 
-undolist undos, redos;
+std::deque<undoblock *> undos, redos;
 VARP(undomegs, 0, 5, 100);                              // bounded by n megs, zero means no undo history
 int totalundos = 0;
 
@@ -666,25 +614,20 @@ void pruneundos(int maxremain)                          // bound memory
 {
     while(totalundos > maxremain && !undos.empty())
     {
-        undoblock *u = undos.popfirst();
+        undoblock *u = undos.front();
+        undos.pop_front();
         totalundos -= u->size;
         freeundo(u);
     }
     //conoutf(CON_DEBUG, "undo: %d of %d(%%%d)", totalundos, undomegs<<20, totalundos*100/(undomegs<<20));
     while(!redos.empty())
     {
-        undoblock *u = redos.popfirst();
+        undoblock *u = redos.front();
+        redos.pop_front();
         totalundos -= u->size;
         freeundo(u);
     }
 }
-
-void clearundos()
-{
-    pruneundos(0);
-}
-
-COMMAND(clearundos, ""); //run pruneundos but with a cache size of zero
 
 undoblock *newundocube(const selinfo &s)
 {
@@ -712,21 +655,21 @@ void addundo(undoblock *u)
 {
     u->size = undosize(u);
     u->timestamp = totalmillis;
-    undos.add(u);
+    undos.push_back(u);
     totalundos += u->size;
     pruneundos(undomegs<<20);
 }
 
 VARP(nompedit, 0, 1, 1);
 
-static int countblock(cube *c, int n = 8)
+static int countblock(const cube * const c, int n = 8)
 {
     int r = 0;
     for(int i = 0; i < n; ++i)
     {
         if(c[i].children)
         {
-            r += countblock(c[i].children);
+            r += countblock(c[i].children->data());
         }
         else
         {
@@ -738,45 +681,53 @@ static int countblock(cube *c, int n = 8)
 
 int countblock(block3 *b)
 {
-    return countblock(b->c(), b->size());
+    return countblock(b->getcube(), b->size());
 }
 
 std::vector<editinfo *> editinfos;
-editinfo *localedit = nullptr;
 
 template<class B>
-static void packcube(cube &c, B &buf)
+static void packcube(const cube &c, B &buf)
 {
     //recursvely apply to children
     if(c.children)
     {
-        buf.put(0xFF);
+        buf.push_back(0xFF);
         for(int i = 0; i < 8; ++i)
         {
-            packcube(c.children[i], buf);
+            packcube((*c.children)[i], buf);
         }
     }
     else
     {
         cube data = c;
-        buf.put(c.material&0xFF);
-        buf.put(c.material>>8);
-        buf.put(data.edges, sizeof(data.edges));
-        buf.put(reinterpret_cast<uchar *>(data.texture), sizeof(data.texture));
+        buf.push_back(c.material&0xFF);
+        buf.push_back(c.material>>8);
+        for(uint i = 0; i < sizeof(data.edges); ++i)
+        {
+            buf.push_back(data.edges[i]);
+        }
+        for(uint i = 0; i < sizeof(data.texture); ++i)
+        {
+            buf.push_back(reinterpret_cast<uchar *>(data.texture)[i]);
+        }
     }
 }
 
 template<class B>
-static bool packblock(block3 &b, B &buf)
+static bool packblock(const block3 &b, B &buf)
 {
     if(b.size() <= 0 || b.size() > (1<<20))
     {
         return false;
     }
     block3 hdr = b;
-    buf.put(reinterpret_cast<const uchar *>(&hdr), sizeof(hdr));
-    cube *c = b.c();
-    for(int i = 0; i < static_cast<int>(b.size()); ++i)
+    for(uint i = 0; i < sizeof(hdr); ++i)
+    {
+        buf.push_back(reinterpret_cast<const uchar *>(&hdr)[i]);
+    }
+    const cube *c = b.getcube();
+    for(uint i = 0; i < static_cast<uint>(b.size()); ++i)
     {
         packcube(c[i], buf);
     }
@@ -789,14 +740,14 @@ struct vslothdr
     ushort slot;
 };
 
-static void packvslots(cube &c, vector<uchar> &buf, vector<ushort> &used)
+static void packvslots(const cube &c, std::vector<uchar> &buf, std::vector<ushort> &used)
 {
     //recursively apply to children
     if(c.children)
     {
         for(int i = 0; i < 8; ++i)
         {
-            packvslots(c.children[i], buf, used);
+            packvslots((*c.children)[i], buf, used);
         }
     }
     else
@@ -804,11 +755,15 @@ static void packvslots(cube &c, vector<uchar> &buf, vector<ushort> &used)
         for(int i = 0; i < 6; ++i) //for each face
         {
             ushort index = c.texture[i];
-            if(vslots.inrange(index) && vslots[index]->changed && used.find(index) < 0)
+            if((vslots.size() > index) && vslots[index]->changed && std::find(used.begin(), used.end(), index) != used.end())
             {
-                used.add(index);
+                used.push_back(index);
                 VSlot &vs = *vslots[index];
-                vslothdr &hdr = *reinterpret_cast<vslothdr *>(buf.pad(sizeof(vslothdr)));
+                for(uint i = 0; i < sizeof(vslothdr); ++i)
+                {
+                    buf.emplace_back();
+                }
+                vslothdr &hdr = *reinterpret_cast<vslothdr *>(&(*(buf.end())) - sizeof(vslothdr));
                 hdr.index = index;
                 hdr.slot = vs.slot->index;
                 packvslot(buf, vs);
@@ -817,15 +772,18 @@ static void packvslots(cube &c, vector<uchar> &buf, vector<ushort> &used)
     }
 }
 
-static void packvslots(block3 &b, vector<uchar> &buf)
+static void packvslots(const block3 &b, std::vector<uchar> &buf)
 {
-    vector<ushort> used;
-    cube *c = b.c();
+    std::vector<ushort> used;
+    const cube *c = b.getcube();
     for(int i = 0; i < b.size(); ++i)
     {
         packvslots(c[i], buf, used);
     }
-    memset(buf.pad(sizeof(vslothdr)), 0, sizeof(vslothdr));
+    for(uint i = 0; i < sizeof(vslothdr); ++i)
+    {
+        buf.push_back(0);
+    }
 }
 
 template<class B>
@@ -838,7 +796,7 @@ static void unpackcube(cube &c, B &buf)
         //recursively apply to children
         for(int i = 0; i < 8; ++i)
         {
-            unpackcube(c.children[i], buf);
+            unpackcube((*c.children)[i], buf);
         }
     }
     else
@@ -873,7 +831,7 @@ static bool unpackblock(block3 *&b, B &buf)
     }
     *b = hdr;
     cube *c = b->c();
-    memset(c, 0, b->size()*sizeof(cube));
+    std::memset(c, 0, b->size()*sizeof(cube));
     for(int i = 0; i < b->size(); ++i)
     {
         unpackcube(c[i], buf);
@@ -881,7 +839,23 @@ static bool unpackblock(block3 *&b, B &buf)
     return true;
 }
 
-std::vector<vslotmap> unpackingvslots;
+struct vslotmap
+{
+    int index;
+    VSlot *vslot;
+
+    vslotmap() {}
+    vslotmap(int index, VSlot *vslot) : index(index), vslot(vslot) {}
+};
+
+static std::vector<vslotmap> remappedvslots;
+
+//used in iengine.h so remappedvslots does not need to be exposed
+void clearremappedvslots()
+{
+    remappedvslots.clear();
+}
+static std::vector<vslotmap> unpackingvslots;
 
 static void unpackvslots(cube &c, ucharbuf &buf)
 {
@@ -890,7 +864,7 @@ static void unpackvslots(cube &c, ucharbuf &buf)
     {
         for(int i = 0; i < 8; ++i)
         {
-            unpackvslots(c.children[i], buf);
+            unpackvslots((*c.children)[i], buf);
         }
     }
     else
@@ -960,6 +934,7 @@ static bool compresseditinfo(const uchar *inbuf, int inlen, uchar *&outbuf, int 
     return true;
 }
 
+//used in iengine.h
 bool uncompresseditinfo(const uchar *inbuf, int inlen, uchar *&outbuf, int &outlen)
 {
     if(compressBound(outlen) > (1<<20))
@@ -978,18 +953,20 @@ bool uncompresseditinfo(const uchar *inbuf, int inlen, uchar *&outbuf, int &outl
     return true;
 }
 
-bool packeditinfo(editinfo *e, int &inlen, uchar *&outbuf, int &outlen)
+//used in iengine.h
+bool packeditinfo(const editinfo *e, int &inlen, uchar *&outbuf, int &outlen)
 {
-    vector<uchar> buf;
+    std::vector<uchar> buf;
     if(!e || !e->copy || !packblock(*e->copy, buf))
     {
         return false;
     }
     packvslots(*e->copy, buf);
-    inlen = buf.length();
-    return compresseditinfo(buf.getbuf(), buf.length(), outbuf, outlen);
+    inlen = buf.size();
+    return compresseditinfo(buf.data(), buf.size(), outbuf, outlen);
 }
 
+//used in iengine.h
 bool unpackeditinfo(editinfo *&e, const uchar *inbuf, int inlen, int outlen)
 {
     if(e && e->copy)
@@ -1018,6 +995,7 @@ bool unpackeditinfo(editinfo *&e, const uchar *inbuf, int inlen, int outlen)
     return true;
 }
 
+//used in iengine.h
 void freeeditinfo(editinfo *&e)
 {
     if(!e)
@@ -1033,18 +1011,31 @@ void freeeditinfo(editinfo *&e)
     e = nullptr;
 }
 
+//used in iengine.h
 bool packundo(undoblock *u, int &inlen, uchar *&outbuf, int &outlen)
 {
-    vector<uchar> buf;
+    std::vector<uchar> buf;
     buf.reserve(512);
-    *reinterpret_cast<ushort *>(buf.pad(2)) = static_cast<ushort>(u->numents);
+    for(uint i = 0; i < sizeof(ushort); ++i)
+    {
+        buf.emplace_back();
+    }
+    *reinterpret_cast<ushort *>(buf.data()) = static_cast<ushort>(u->numents);
     if(u->numents)
     {
         undoent *ue = u->ents();
         for(int i = 0; i < u->numents; ++i)
         {
-            *reinterpret_cast<ushort *>(buf.pad(2)) = static_cast<ushort>(ue[i].i);
-            entity &e = *reinterpret_cast<entity *>(buf.pad(sizeof(entity)));
+            for(uint i = 0; i < sizeof(ushort); ++i)
+            {
+                buf.emplace_back();
+            }
+            *reinterpret_cast<ushort *>(&(*buf.end()) - sizeof(ushort)) = static_cast<ushort>(ue[i].i);
+            for(uint i = 0; i < sizeof(entity); ++i)
+            {
+                buf.emplace_back();
+            }
+            entity &e = *reinterpret_cast<entity *>(&(*buf.end()) - sizeof(entity));
             e = ue[i].e;
         }
     }
@@ -1055,22 +1046,26 @@ bool packundo(undoblock *u, int &inlen, uchar *&outbuf, int &outlen)
         {
             return false;
         }
-        buf.put(u->gridmap(), b.size());
+        for(int i = 0; i < b.size(); ++i)
+        {
+            buf.push_back(u->gridmap()[i]);
+        }
         packvslots(b, buf);
     }
-    inlen = buf.length();
-    return compresseditinfo(buf.getbuf(), buf.length(), outbuf, outlen);
+    inlen = buf.size();
+    return compresseditinfo(buf.data(), buf.size(), outbuf, outlen);
 }
 
+//used in iengine.h
 bool packundo(bool undo, int &inlen, uchar *&outbuf, int &outlen)
 {
     if(undo)
     {
-        return !undos.empty() && packundo(undos.last, inlen, outbuf, outlen);
+        return !undos.empty() && packundo(undos.back(), inlen, outbuf, outlen);
     }
     else
     {
-        return !redos.empty() && packundo(redos.last, inlen, outbuf, outlen);
+        return !redos.empty() && packundo(redos.back(), inlen, outbuf, outlen);
     }
 }
 
@@ -1106,37 +1101,29 @@ struct prefab : editinfo
     }
 };
 
-static hashnameset<prefab> prefabs;
+static std::unordered_map<std::string, prefab> prefabs;
 
 void cleanupprefabs()
 {
-    ENUMERATE(prefabs, prefab, p, p.cleanup());
-}
-
-void delprefab(char *name)
-{
-    prefab *p = prefabs.access(name);
-    if(p)
+    for(auto &[k, i] : prefabs)
     {
-        p->cleanup();
-        prefabs.remove(name);
-        conoutf("deleted prefab %s", name);
+        i.cleanup();
     }
 }
-COMMAND(delprefab, "s");
 
-void pasteundoblock(block3 *b, uchar *g)
+void pasteundoblock(block3 *b, const uchar *g)
 {
     cube *s = b->c();
-    LOOP_XYZ(*b, 1<<std::min(static_cast<int>(*g++), worldscale-1), pastecube(*s++, c));
+    uint i = 0;
+    LOOP_XYZ(*b, 1<<std::min(static_cast<int>(*g++), rootworld.mapscale()-1), pastecube(s[i], c); i++; );
 }
 
 //used in client prefab unpacking, handles the octree unpacking (not the entities,
 // which are game-dependent)
-void unpackundocube(ucharbuf buf, uchar *outbuf)
+void unpackundocube(ucharbuf &buf, uchar *outbuf)
 {
     block3 *b = nullptr;
-    if(!unpackblock(b, buf) || b->grid >= worldsize || buf.remaining() < b->size())
+    if(!unpackblock(b, buf) || b->grid >= rootworld.mapsize() || buf.remaining() < b->size())
     {
         freeblock(b);
         delete[] outbuf;
@@ -1148,61 +1135,6 @@ void unpackundocube(ucharbuf buf, uchar *outbuf)
     rootworld.changed(*b, false);
     freeblock(b);
 }
-/* saveprefab: saves the current selection to a prefab file
- *
- * Parameters:
- *  char * name: a string containing the name of the prefab to save (sans file type)
- * Returns:
- *  void
- * Effects:
- * Using the global variables for selection information, writes the current selection
- * to a prefab file with the given name. Does not save slot information, so pasting
- * into a map with a different texture slot list will result in meaningless textures.
- *
- */
-void saveprefab(char *name)
-{
-    if(!name[0] || noedit(true) || (nompedit && multiplayer))
-    {
-        multiplayerwarn();
-        return;
-    }
-    prefab *b = prefabs.access(name);
-    if(!b)
-    {
-        b = &prefabs[name];
-        b->name = newstring(name);
-    }
-    if(b->copy)
-    {
-        freeblock(b->copy);
-    }
-    PROTECT_SEL(b->copy = blockcopy(block3(sel), sel.grid));
-    rootworld.changed(sel);
-    DEF_FORMAT_STRING(filename, "media/prefab/%s.obr", name);
-    path(filename);
-    stream *f = opengzfile(filename, "wb");
-    if(!f)
-    {
-        conoutf(Console_Error, "could not write prefab to %s", filename);
-        return;
-    }
-    prefabheader hdr;
-    std::string headermagic = "OEBR";
-    std::copy(headermagic.begin(), headermagic.end(), hdr.magic);
-    hdr.version = 0;
-    f->write(&hdr, sizeof(hdr));
-    streambuf<uchar> s(f);
-    if(!packblock(*b->copy, s))
-    {
-        delete f;
-        conoutf(Console_Error, "could not pack prefab %s", filename);
-        return;
-    }
-    delete f;
-    conoutf("wrote prefab file %s", filename);
-}
-COMMAND(saveprefab, "s");
 
 void makeundo(selinfo &s)
 {
@@ -1215,7 +1147,7 @@ void makeundo(selinfo &s)
 
 void makeundo()                        // stores state of selected cubes before editing
 {
-    if(lastsel==sel || sel.s.iszero())
+    if(lastsel==sel || !sel.s)
     {
         return;
     }
@@ -1223,22 +1155,23 @@ void makeundo()                        // stores state of selected cubes before 
     makeundo(sel);
 }
 
-void pasteblock(block3 &b, selinfo &sel, bool local)
+void pasteblock(const block3 &b, selinfo &sel, bool local)
 {
     sel.s = b.s;
     int o = sel.orient;
     sel.orient = b.orient;
-    cube *s = b.c();
-    LOOP_SEL_XYZ(if(!(s->isempty()) || s->children || s->material != Mat_Air) pastecube(*s, c); s++); // 'transparent'. old opaque by 'delcube; paste'
+    const cube *s = b.getcube();
+    uint i = 0;
+    LOOP_SEL_XYZ(if(!(s[i].isempty()) || s[i].children || s[i].material != Mat_Air) pastecube(s[i], c); i++); // 'transparent'. old opaque by 'delcube; paste'
     sel.orient = o;
 }
 
 prefab *loadprefab(const char *name, bool msg = true)
 {
-    prefab *b = prefabs.access(name);
-    if(b)
+    auto itr = prefabs.find(name);
+    if(itr != prefabs.end())
     {
-        return b;
+        return &(*itr).second;
     }
     DEF_FORMAT_STRING(filename, "media/prefab/%s.obr", name);
     path(filename);
@@ -1252,7 +1185,7 @@ prefab *loadprefab(const char *name, bool msg = true)
         return nullptr;
     }
     prefabheader hdr;
-    if(f->read(&hdr, sizeof(hdr)) != sizeof(prefabheader) || memcmp(hdr.magic, "OEBR", 4))
+    if(f->read(&hdr, sizeof(hdr)) != sizeof(prefabheader) || std::memcmp(hdr.magic, "OEBR", 4))
     {
         delete f;
         if(msg)
@@ -1283,27 +1216,12 @@ prefab *loadprefab(const char *name, bool msg = true)
     }
     delete f;
 
-    b = &prefabs[name];
+    prefab *b = &(*prefabs.insert_or_assign(name, prefab()).first).second;
     b->name = newstring(name);
     b->copy = copy;
 
     return b;
 }
-
-static void pasteprefab(char *name)
-{
-    if(!name[0] || noedit() || (nompedit && multiplayer))
-    {
-        multiplayerwarn();
-        return;
-    }
-    prefab *b = loadprefab(name, true);
-    if(b)
-    {
-        pasteblock(*b->copy, sel, true);
-    }
-}
-COMMAND(pasteprefab, "s");
 
 class prefabmesh
 {
@@ -1314,13 +1232,14 @@ class prefabmesh
             vec4<uchar> norm;
         };
 
-        static constexpr int prefabmeshsize = 1<<9;
-        int table[prefabmeshsize];
         std::vector<vertex> verts;
         std::vector<int> chain;
         std::vector<ushort> tris;
 
-        prefabmesh() { memset(table, -1, sizeof(table)); }
+        prefabmesh()
+        {
+            table.fill(-1);
+        }
 
         int addvert(const vec &pos, const bvec &norm)
         {
@@ -1361,9 +1280,12 @@ class prefabmesh
             p.numtris = tris.size()/3;
         }
     private:
+        static constexpr int prefabmeshsize = 1<<9;
+        std::array<int, prefabmeshsize> table;
         int addvert(const vertex &v)
         {
-            uint h = hthash(v.pos)&(prefabmeshsize-1);
+            auto vechash = std::hash<vec>();
+            uint h = vechash(v.pos)&(prefabmeshsize-1);
             for(int i = table[h]; i>=0; i = chain[i])
             {
                 const vertex &c = verts[i];
@@ -1383,16 +1305,16 @@ class prefabmesh
 
 };
 
-static void genprefabmesh(prefabmesh &r, cube &c, const ivec &co, int size)
+static void genprefabmesh(prefabmesh &r, const cube &c, const ivec &co, int size)
 {
     //recursively apply to children
     if(c.children)
     {
-        neighborstack[++neighbordepth] = c.children;
+        neighborstack[++neighbordepth] = &(*c.children)[0];
         for(int i = 0; i < 8; ++i)
         {
             ivec o(i, co, size/2);
-            genprefabmesh(r, c.children[i], o, size/2);
+            genprefabmesh(r, (*c.children)[i], o, size/2);
         }
         --neighbordepth;
     }
@@ -1403,7 +1325,7 @@ static void genprefabmesh(prefabmesh &r, cube &c, const ivec &co, int size)
         {
             if((vis = visibletris(c, i, co, size)))
             {
-                ivec v[4];
+                std::array<ivec, 4> v;
                 genfaceverts(c, i, v);
                 int convex = 0;
                 if(!flataxisface(c, i))
@@ -1447,28 +1369,26 @@ void cubeworld::genprefabmesh(prefab &p)
     block3 b = *p.copy;
     b.o = ivec(0, 0, 0);
 
-    cube *oldworldroot = worldroot;
-    int oldworldscale = worldscale,
-        oldworldsize = worldsize;
+    std::array<cube, 8> *oldworldroot = worldroot;
+    int oldworldscale = worldscale;
 
     worldroot = newcubes();
     worldscale = 1;
-    worldsize = 2;
-    while(worldsize < std::max(std::max(b.s.x, b.s.y), b.s.z)*b.grid)
+    while(mapscale() < std::max(std::max(b.s.x, b.s.y), b.s.z)*b.grid)
     {
         worldscale++;
-        worldsize *= 2;
     }
 
     cube *s = p.copy->c();
-    LOOP_XYZ(b, b.grid, if(!(s->isempty()) || s->children) pastecube(*s, c); s++);
+    uint i = 0;
+    LOOP_XYZ(b, b.grid, if(!(s[i].isempty()) || s[i].children) pastecube(s[i], c); i++);
 
     prefabmesh r;
-    neighborstack[++neighbordepth] = worldroot;
+    neighborstack[++neighbordepth] = &(*worldroot)[0];
     //recursively apply to children
     for(int i = 0; i < 8; ++i)
     {
-        ::genprefabmesh(r, worldroot[i], ivec(i, ivec(0, 0, 0), worldsize/2), worldsize/2);
+        ::genprefabmesh(r, (*worldroot)[i], ivec(i, ivec(0, 0, 0), mapsize()/2), mapsize()/2);
     }
     --neighbordepth;
     r.setup(p);
@@ -1477,7 +1397,6 @@ void cubeworld::genprefabmesh(prefab &p)
 
     worldroot = oldworldroot;
     worldscale = oldworldscale;
-    worldsize = oldworldsize;
 
     useshaderbyname("prefab");
 }
@@ -1500,15 +1419,15 @@ static void renderprefab(prefab &p, const vec &o, float yaw, float pitch, float 
     m.settranslation(o);
     if(yaw)
     {
-        m.rotate_around_z(yaw*RAD);
+        m.rotate_around_z(yaw/RAD);
     }
     if(pitch)
     {
-        m.rotate_around_x(pitch*RAD);
+        m.rotate_around_x(pitch/RAD);
     }
     if(roll)
     {
-        m.rotate_around_y(-roll*RAD);
+        m.rotate_around_y(-roll/RAD);
     }
     matrix3 w(m);
     if(size > 0 && size != 1)
@@ -1531,7 +1450,7 @@ static void renderprefab(prefab &p, const vec &o, float yaw, float pitch, float 
     GLOBALPARAM(prefabworld, w);
     SETSHADER(prefab);
     gle::color(vec(color).mul(ldrscale));
-    glDrawRangeElements_(GL_TRIANGLES, 0, p.numverts-1, p.numtris*3, GL_UNSIGNED_SHORT, (ushort *)0);
+    glDrawRangeElements(GL_TRIANGLES, 0, p.numverts-1, p.numtris*3, GL_UNSIGNED_SHORT, (ushort *)0);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     enablepolygonoffset(GL_POLYGON_OFFSET_LINE);
@@ -1540,7 +1459,7 @@ static void renderprefab(prefab &p, const vec &o, float yaw, float pitch, float 
     GLOBALPARAM(prefabmatrix, pm);
     SETSHADER(prefab);
     gle::color((outlinecolor).tocolor().mul(ldrscale));
-    glDrawRangeElements_(GL_TRIANGLES, 0, p.numverts-1, p.numtris*3, GL_UNSIGNED_SHORT, (ushort *)0);
+    glDrawRangeElements(GL_TRIANGLES, 0, p.numverts-1, p.numtris*3, GL_UNSIGNED_SHORT, (ushort *)0);
 
     disablepolygonoffset(GL_POLYGON_OFFSET_LINE);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -1592,14 +1511,14 @@ void compacteditvslots()
         editinfo *e = editinfos[i];
         compactvslots(e->copy->c(), e->copy->size());
     }
-    for(undoblock *u = undos.first; u; u = u->next)
+    for(undoblock *u : undos)
     {
         if(!u->numents)
         {
             compactvslots(u->block()->c(), u->block()->size());
         }
     }
-    for(undoblock *u = redos.first; u; u = u->next)
+    for(undoblock *u : redos)
     {
         if(!u->numents)
         {
@@ -1614,10 +1533,10 @@ ushort getmaterial(cube &c)
 {
     if(c.children)
     {
-        ushort mat = getmaterial(c.children[7]);
+        ushort mat = getmaterial((*c.children)[7]);
         for(int i = 0; i < 7; ++i)
         {
-            if(mat != getmaterial(c.children[i]))
+            if(mat != getmaterial((*c.children)[i]))
             {
                 return Mat_Air;
             }
@@ -1629,16 +1548,10 @@ ushort getmaterial(cube &c)
 
 /////////// texture editing //////////////////
 
-int curtexindex = -1,
-    lasttex = 0,
-    lasttexmillis = -1;
-int texpaneltimer = 0;
+int curtexindex = -1;
 std::vector<ushort> texmru;
 
-selinfo repsel;
 int reptex = -1;
-
-std::vector<vslotmap> remappedvslots;
 
 static VSlot *remapvslot(int index, bool delta, const VSlot &ds)
 {
@@ -1680,7 +1593,7 @@ void remapvslots(cube &c, bool delta, const VSlot &ds, int orient, bool &findrep
     {
         for(int i = 0; i < 8; ++i)
         {
-            remapvslots(c.children[i], delta, ds, orient, findrep, findedit);
+            remapvslots((*c.children)[i], delta, ds, orient, findrep, findedit);
         }
         return;
     }
@@ -1728,10 +1641,11 @@ void remapvslots(cube &c, bool delta, const VSlot &ds, int orient, bool &findrep
 
 void compactmruvslots()
 {
+    static int lasttex = 0;
     remappedvslots.clear();
-    for(uint i = texmru.size(); --i >=0;) //note reverse iteration
+    for(int i = static_cast<int>(texmru.size()); --i >=0;) //note reverse iteration
     {
-        if(vslots.inrange(texmru[i]))
+        if(vslots.size() > texmru[i])
         {
             VSlot &vs = *vslots[texmru[i]];
             if(vs.index >= 0)
@@ -1740,17 +1654,17 @@ void compactmruvslots()
                 continue;
             }
         }
-        if(static_cast<uint>(curtexindex) > i)
+        if(curtexindex > i)
         {
             curtexindex--;
         }
-        else if(static_cast<uint>(curtexindex) == i)
+        else if(curtexindex == i)
         {
             curtexindex = -1;
         }
         texmru.erase(texmru.begin() + i);
     }
-    if(vslots.inrange(lasttex))
+    if(vslots.size() > static_cast<uint>(lasttex))
     {
         VSlot &vs = *vslots[lasttex];
         lasttex = vs.index >= 0 ? vs.index : 0;
@@ -1759,7 +1673,7 @@ void compactmruvslots()
     {
         lasttex = 0;
     }
-    reptex = vslots.inrange(reptex) ? vslots[reptex]->index : -1;
+    reptex = (vslots.size() > static_cast<uint>(reptex)) ? vslots[reptex]->index : -1;
 }
 
 void edittexcube(cube &c, int tex, int orient, bool &findrep)
@@ -1792,7 +1706,7 @@ void edittexcube(cube &c, int tex, int orient, bool &findrep)
     {
         for(int i = 0; i < 8; ++i)
         {
-            edittexcube(c.children[i], tex, orient, findrep);
+            edittexcube((*c.children)[i], tex, orient, findrep);
         }
     }
 }
@@ -1813,7 +1727,7 @@ void cube::setmat(ushort mat, ushort matmask, ushort filtermat, ushort filtermas
     {
         for(int i = 0; i < 8; ++i)
         {
-            children[i].setmat( mat, matmask, filtermat, filtermask, filtergeom);
+            (*children)[i].setmat( mat, matmask, filtermat, filtermask, filtergeom);
         }
     }
     else if((material&filtermask) == filtermat)
@@ -1867,6 +1781,7 @@ void cube::setmat(ushort mat, ushort matmask, ushort filtermat, ushort filtermas
 
 void rendertexturepanel(int w, int h)
 {
+    static int texpaneltimer = 0;
     if((texpaneltimer -= curtime)>0 && editmode)
     {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1892,11 +1807,11 @@ void rendertexturepanel(int w, int h)
                         *glowtex = nullptr;
                 if(slot.texmask&(1 << Tex_Glow))
                 {
-                    for(int j = 0; j < slot.sts.length(); j++)
+                    for(const Slot::Tex &t : slot.sts)
                     {
-                        if(slot.sts[j].type == Tex_Glow)
+                        if(t.type == Tex_Glow)
                         {
-                            glowtex = slot.sts[j].t;
+                            glowtex = t.t;
                             break;
                         }
                     }
@@ -1979,33 +1894,293 @@ void rendertexturepanel(int w, int h)
         resethudshader();
     }
 }
-//defines editing readonly variables, useful for the HUD
-#define EDITSTAT(name, type, val) \
-    void editstat##name() \
-    { \
-        static int laststat = 0; \
-        static type prevstat = 0; \
-        static type curstat = 0; \
-        if(totalmillis - laststat >= statrate) \
+
+static int bounded(int n)
+{
+    return n<0 ? 0 : (n>8 ? 8 : n);
+}
+
+static void pushedge(uchar &edge, int dir, int dc)
+{
+    int ne = bounded(EDGE_GET(edge, dc)+dir);
+    EDGE_SET(edge, dc, ne);
+    int oe = EDGE_GET(edge, 1-dc);
+    if((dir<0 && dc && oe>ne) || (dir>0 && dc==0 && oe<ne))
+    {
+        EDGE_SET(edge, 1-dc, ne);
+    }
+}
+
+//used in iengine
+void linkedpush(cube &c, int d, int x, int y, int dc, int dir)
+{
+    ivec v, p;
+    getcubevector(c, d, x, y, dc, v);
+
+    for(int i = 0; i < 2; ++i)
+    {
+        for(int j = 0; j < 2; ++j)
+        {
+            getcubevector(c, d, i, j, dc, p);
+            if(v==p)
+            {
+                pushedge(CUBE_EDGE(c, d, i, j), dir, dc);
+            }
+        }
+    }
+}
+
+void initoctaeditcmds()
+{
+    //some of these commands use code only needed for the command itself, so
+    //they are declared as lambdas inside the local scope
+
+    //others use functions in the global namespace, which are implemented elsewhere
+    //in this file
+
+    //static to make sure that these lambdas have constant location in memory for identmap to look up
+    static auto movingcmd = [] (int *n)
+    {
+        if(*n >= 0)
+        {
+            if(!*n || (moving<=1 && !pointinsel(sel, vec(cur).add(1))))
+            {
+                moving = 0;
+            }
+            else if(!moving)
+            {
+                moving = 1;
+            }
+        }
+        intret(moving);
+    };
+    //unary + operator converts to function pointer
+    addcommand("moving",        reinterpret_cast<identfun>(+movingcmd), "b", Id_Command);
+
+    addcommand("entcancel",     reinterpret_cast<identfun>(entcancel), "", Id_Command); ///
+    addcommand("cubecancel",    reinterpret_cast<identfun>(cubecancel), "", Id_Command); ///
+    addcommand("cancelsel",     reinterpret_cast<identfun>(cancelsel), "", Id_Command); ///
+    addcommand("reorient",      reinterpret_cast<identfun>(reorient), "", Id_Command); ///
+
+    static auto selextend = [] ()
+    {
+        if(noedit(true))
+        {
+            return;
+        }
+        for(int i = 0; i < 3; ++i)
+        {
+            if(cur[i]<sel.o[i])
+            {
+                sel.s[i] += (sel.o[i]-cur[i])/sel.grid;
+                sel.o[i] = cur[i];
+            }
+            else if(cur[i]>=sel.o[i]+sel.s[i]*sel.grid)
+            {
+                sel.s[i] = (cur[i]-sel.o[i])/sel.grid+1;
+            }
+        }
+    };
+    addcommand("selextend",     reinterpret_cast<identfun>(+selextend), "", Id_Command);
+
+    static auto selmoved = [] ()
+    {
+        if(noedit(true))
+        {
+            return;
+        }
+        intret(sel.o != savedsel.o ? 1 : 0);
+    };
+
+    static auto selsave = [] ()
+    {
+        if(noedit(true))
+        {
+            return;
+        }
+        savedsel = sel;
+    };
+
+    static auto selrestore = [] ()
+    {
+        if(noedit(true))
+        {
+            return;
+        }
+        sel = savedsel;
+    };
+
+    static auto selswap = [] ()
+    {
+        if(noedit(true))
+        {
+            return;
+        }
+        std::swap(sel, savedsel);
+    };
+
+    addcommand("selmoved",      reinterpret_cast<identfun>(+selmoved), "", Id_Command);
+    addcommand("selsave",       reinterpret_cast<identfun>(+selsave), "", Id_Command);
+    addcommand("selrestore",    reinterpret_cast<identfun>(+selrestore), "", Id_Command);
+    addcommand("selswap",       reinterpret_cast<identfun>(+selswap), "", Id_Command);
+
+    static auto haveselcmd = [] ()
+    {
+        intret(havesel ? selchildcount : 0);
+    };
+
+    addcommand("havesel",       reinterpret_cast<identfun>(+haveselcmd), "", Id_Command);
+
+
+    static auto selchildcountcmd = [] ()
+    {
+        if(selchildcount < 0)
+        {
+            result(tempformatstring("1/%d", -selchildcount));
+        }
+        else
+        {
+            intret(selchildcount);
+        }
+    };
+    addcommand("selchildnum", reinterpret_cast<identfun>(+selchildcountcmd), "", Id_Command);
+
+
+    static auto selchildmatcmd = [] (char *prefix)
+    {
+        if(selchildmat > 0)
+        {
+            result(getmaterialdesc(selchildmat, prefix));
+        }
+    };
+    addcommand("selchildmat",   reinterpret_cast<identfun>(+selchildmatcmd), "s", Id_Command);
+
+    static auto clearundos = [] ()
+    {
+        pruneundos(0);
+    };
+    addcommand("clearundos",    reinterpret_cast<identfun>(+clearundos), "", Id_Command); //run pruneundos but with a cache size of zero
+
+    static auto delprefab = [] (char *name)
+    {
+        auto itr = prefabs.find(name);
+        if(itr != prefabs.end())
+        {
+            (*itr).second.cleanup();
+            prefabs.erase(name);
+            conoutf("deleted prefab %s", name);
+        }
+        else
+        {
+            conoutf("no such prefab %s", name);
+        }
+    };
+    addcommand("delprefab",     reinterpret_cast<identfun>(+delprefab), "s", Id_Command);
+
+    /* saveprefab: saves the current selection to a prefab file
+     *
+     * Parameters:
+     *  char * name: a string containing the name of the prefab to save (sans file type)
+     * Returns:
+     *  void
+     * Effects:
+     * Using the global variables for selection information, writes the current selection
+     * to a prefab file with the given name. Does not save slot information, so pasting
+     * into a map with a different texture slot list will result in meaningless textures.
+     *
+     */
+    static auto saveprefab = [] (char *name)
+    {
+        if(!name[0] || noedit(true) || (nompedit && multiplayer))
+        {
+            multiplayerwarn();
+            return;
+        }
+        auto itr = prefabs.find(name);
+        prefab *b = nullptr;
+        if(itr == prefabs.end())
+        {
+            b = &(*prefabs.insert( { std::string(name), prefab() } ).first).second;
+            b->name = newstring(name);
+        }
+        else
+        {
+            b = &(*itr).second;
+        }
+        if(b->copy)
+        {
+            freeblock(b->copy);
+        }
+        PROTECT_SEL(b->copy = blockcopy(block3(sel), sel.grid));
+        rootworld.changed(sel);
+        DEF_FORMAT_STRING(filename, "media/prefab/%s.obr", name);
+        path(filename);
+        stream *f = opengzfile(filename, "wb");
+        if(!f)
+        {
+            conoutf(Console_Error, "could not write prefab to %s", filename);
+            return;
+        }
+        prefabheader hdr;
+        std::string headermagic = "OEBR";
+        std::copy(headermagic.begin(), headermagic.end(), hdr.magic);
+        hdr.version = 0;
+        f->write(&hdr, sizeof(hdr));
+        streambuf<uchar> s(f);
+        if(!packblock(*b->copy, s))
+        {
+            delete f;
+            conoutf(Console_Error, "could not pack prefab %s", filename);
+            return;
+        }
+        delete f;
+        conoutf("wrote prefab file %s", filename);
+    };
+    addcommand("saveprefab",    reinterpret_cast<identfun>(+saveprefab), "s", Id_Command);
+
+    static auto pasteprefab = [] (char *name)
+    {
+        if(!name[0] || noedit() || (nompedit && multiplayer))
+        {
+            multiplayerwarn();
+            return;
+        }
+        prefab *b = loadprefab(name, true);
+        if(b)
+        {
+            pasteblock(*b->copy, sel, true);
+        }
+    };
+    addcommand("pasteprefab",   reinterpret_cast<identfun>(+pasteprefab), "s", Id_Command);
+
+    //defines editing readonly variables, useful for the HUD
+    #define EDITSTAT(name, val) \
+        static auto name = [] () \
         { \
-            prevstat = curstat; \
-            laststat = totalmillis - (totalmillis%statrate); \
-        } \
-        if(prevstat == curstat) curstat = (val); \
-        type##ret(curstat); \
-    } \
-    COMMAND(editstat##name, "");
+            static int laststat = 0; \
+            static int prevstat = 0; \
+            static int curstat = 0; \
+            if(totalmillis - laststat >= statrate) \
+            { \
+                prevstat = curstat; \
+                laststat = totalmillis - (totalmillis%statrate); \
+            } \
+            if(prevstat == curstat) curstat = (val); \
+            intret(curstat); \
+        }; \
+        addcommand(#name, reinterpret_cast<identfun>(+name), "", Id_Command);
 
-EDITSTAT(wtr, int, wtris);
-EDITSTAT(vtr, int, (vtris*100)/std::max(wtris, 1));
-EDITSTAT(wvt, int, wverts);
-EDITSTAT(vvt, int, (vverts*100)/std::max(wverts, 1));
-EDITSTAT(evt, int, xtraverts);
-EDITSTAT(eva, int, xtravertsva);
-EDITSTAT(octa, int, allocnodes*8);
-EDITSTAT(va, int, allocva);
-EDITSTAT(glde, int, glde);
-EDITSTAT(geombatch, int, gbatches);
-EDITSTAT(oq, int, getnumqueries());
+    EDITSTAT(wtr, wtris);
+    EDITSTAT(vtr, (vtris*100)/std::max(wtris, 1));
+    EDITSTAT(wvt, wverts);
+    EDITSTAT(vvt, (vverts*100)/std::max(wverts, 1));
+    EDITSTAT(evt, xtraverts);
+    EDITSTAT(eva, xtravertsva);
+    EDITSTAT(octa, allocnodes*8);
+    EDITSTAT(va, allocva);
+    EDITSTAT(gldes, glde);
+    EDITSTAT(geombatch, gbatches);
+    EDITSTAT(oq, occlusionengine.getnumqueries());
 
-#undef EDITSTAT
+    #undef EDITSTAT
+}

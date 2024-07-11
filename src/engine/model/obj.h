@@ -3,32 +3,44 @@
 
 struct obj;
 
-struct obj : vertloader<obj>
+struct obj final : vertloader<obj>
 {
-    obj(const char *name) : vertloader(name) {}
+    obj(std::string name);
 
     static const char *formatname();
     static bool cananimate();
-    bool flipy() const;
-    int type() const;
+    bool flipy() const override final;
+    int type() const override final;
+    bool skeletal() const override final;
 
     struct objmeshgroup : vertmeshgroup
     {
         public:
-            bool load(const char *filename, float smooth);
+            bool load(const char *filename, float smooth) override final;
 
         private:
             void parsevert(char *s, std::vector<vec> &out);
-            const void flushmesh(string meshname, vertmesh *curmesh, vector<vert> verts, vector<tcvert> tcverts,
-                                               vector<tri> tris, std::vector<vec> attrib, float smooth);
+            void flushmesh(vertmesh *curmesh,
+                           const std::vector<vert> &verts,
+                           const std::vector<tcvert> &tcverts,
+                           const std::vector<tri> &tris,
+                           const std::vector<vec> &attrib,
+                           float smooth);
     };
 
-    vertmeshgroup *newmeshes()
+    vertmeshgroup *newmeshes() override final
     {
         return new objmeshgroup;
     }
 
-    bool loaddefaultparts();
+    bool loaddefaultparts() override final;
+    /* note about objcommands variable:
+     *
+     * this variable is never used anywhere at all in the codebase
+     * it only exists to call its constructor which adds commands to the cubescript
+     * ident hash table of the given template type (obj)
+     */
+    static vertcommands<obj> objcommands;
 };
 
 #endif

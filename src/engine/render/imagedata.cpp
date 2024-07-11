@@ -1,8 +1,8 @@
 /**
  * @brief texture information class definitions
- * 
+ *
  * This file implements a class containing the associated date with a texture image.
- * It is only used by texture.cpp.
+ * It is only used by texture.cpp and shaderparam.cpp.
  */
 #include "../libprimis-headers/cube.h"
 #include "../../shared/geomexts.h"
@@ -10,10 +10,12 @@
 
 #include "imagedata.h"
 #include "renderwindow.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/control.h"
 #include "interface/console.h"
+#include "interface/cs.h" //for stringslice
 
 namespace
 {
@@ -21,7 +23,7 @@ namespace
     vec parsevec(const char *arg)
     {
         vec v(0, 0, 0);
-        int i = 0;
+        uint i = 0;
         for(; arg[0] && (!i || arg[0]=='/') && i<3; arg += std::strcspn(arg, "/,><"), i++)
         {
             if(i)
@@ -117,6 +119,9 @@ int ImageData::calcsize() const
     return size;
 }
 
+//Clears the objects pointers that the image data points to, to allow them to be exclusively
+//pointed to by another object. This is used when calling replace() such that the old object
+//does not have references to the new object's data fields.
 void ImageData::disown()
 {
     data = nullptr;
@@ -137,6 +142,8 @@ void ImageData::cleanup()
     disown();
 }
 
+// Deletes the data associated with the current ImageData object
+//and makes the object point to the one passed by parameter
 void ImageData::replace(ImageData &d)
 {
     cleanup();
@@ -150,10 +157,10 @@ void ImageData::replace(ImageData &d)
 
 void ImageData::wraptex(SDL_Surface *s)
 {
-    setdata((uchar *)s->pixels, s->w, s->h, s->format->BytesPerPixel);
+    setdata(static_cast<uchar *>(s->pixels), s->w, s->h, s->format->BytesPerPixel);
     pitch = s->pitch;
     owner = s;
-    freefunc = (void (*)(void *))SDL_FreeSurface;
+    freefunc = reinterpret_cast<void (*)(void *)>(SDL_FreeSurface);
 }
 
 #define WRITE_TEX(t, body) do \
@@ -310,8 +317,8 @@ void ImageData::texoffset(int xoffset, int yoffset)
     for(int y = 0; y < h; ++y)
     {
         uchar *dst = static_cast<uchar *>(d.data)+((y+yoffset)%d.h)*d.pitch;
-        memcpy(dst+xoffset*bpp, src, (w-xoffset)*bpp);
-        memcpy(dst, src+(w-xoffset)*bpp, xoffset*bpp);
+        std::memcpy(dst+xoffset*bpp, src, (w-xoffset)*bpp);
+        std::memcpy(dst, src+(w-xoffset)*bpp, xoffset*bpp);
         src += pitch;
     }
     replace(d);
@@ -332,7 +339,7 @@ void ImageData::texcrop(int x, int y, int w, int h)
           *dst = d.data;
     for(int y = 0; y < h; ++y)
     {
-        memcpy(dst, src, w*bpp);
+        std::memcpy(dst, src, w*bpp);
         src += pitch;
         dst += d.pitch;
     }
@@ -514,8 +521,10 @@ void ImageData::texagrad(float x2, float y2, float x1, float y1)
     }
 }
 
-void ImageData::texblend(ImageData &s, ImageData &m)
+void ImageData::texblend(const ImageData &s0, const ImageData &m0)
 {
+    ImageData s(s0),
+              m(m0);
     if(s.w != w || s.h != h)
     {
         s.scaleimage(w, h);
@@ -545,18 +554,24 @@ void ImageData::texblend(ImageData &s, ImageData &m)
             return;
         }
         //need to declare int for each var because it's inside a macro body
-        if(bpp < 3) READ_WRITE_TEX((*this), s,
-            int srcblend = src[1];
-            int dstblend = 255 - srcblend;
-            dst[0] = static_cast<uchar>((dst[0]*dstblend + src[0]*srcblend)/255);
-        );
-        else READ_WRITE_TEX((*this), s,
-            int srcblend = src[3];
-            int dstblend = 255 - srcblend;
-            dst[0] = static_cast<uchar>((dst[0]*dstblend + src[0]*srcblend)/255);
-            dst[1] = static_cast<uchar>((dst[1]*dstblend + src[1]*srcblend)/255);
-            dst[2] = static_cast<uchar>((dst[2]*dstblend + src[2]*srcblend)/255);
-        );
+        if(bpp < 3)
+        {
+            READ_WRITE_TEX((*this), s,
+                int srcblend = src[1];
+                int dstblend = 255 - srcblend;
+                dst[0] = static_cast<uchar>((dst[0]*dstblend + src[0]*srcblend)/255);
+            );
+        }
+        else
+        {
+            READ_WRITE_TEX((*this), s,
+                int srcblend = src[3];
+                int dstblend = 255 - srcblend;
+                dst[0] = static_cast<uchar>((dst[0]*dstblend + src[0]*srcblend)/255);
+                dst[1] = static_cast<uchar>((dst[1]*dstblend + src[1]*srcblend)/255);
+                dst[2] = static_cast<uchar>((dst[2]*dstblend + src[2]*srcblend)/255);
+            );
+        }
     }
     else
     {
@@ -592,7 +607,7 @@ void ImageData::texblend(ImageData &s, ImageData &m)
     }
 }
 
-void ImageData::addglow(ImageData &g, const vec &glowcolor)
+void ImageData::addglow(const ImageData &g, const vec &glowcolor)
 {
     if(g.bpp < 3)
     {
@@ -614,7 +629,7 @@ void ImageData::addglow(ImageData &g, const vec &glowcolor)
     }
 }
 
-void ImageData::mergespec(ImageData &s)
+void ImageData::mergespec(const ImageData &s)
 {
     if(s.bpp < 3)
     {
@@ -630,14 +645,14 @@ void ImageData::mergespec(ImageData &s)
     }
 }
 
-void ImageData::mergedepth(ImageData &z)
+void ImageData::mergedepth(const ImageData &z)
 {
     READ_WRITE_RGBA_TEX((*this), z,
         dst[3] = src[0];
     );
 }
 
-void ImageData::mergealpha(ImageData &s)
+void ImageData::mergealpha(const ImageData &s)
 {
     if(s.bpp < 3)
     {
@@ -685,16 +700,42 @@ void ImageData::texnormal(int emphasis)
             normal.y += src[((y+h-1)%h)*pitch + x*bpp];
             normal.y -= src[((y+1)%h)*pitch + x*bpp];
             normal.normalize();
-            *dst++ = static_cast<uchar>(127.5f + normal.x*127.5f);
-            *dst++ = static_cast<uchar>(127.5f + normal.y*127.5f);
-            *dst++ = static_cast<uchar>(127.5f + normal.z*127.5f);
+            *(dst++) = static_cast<uchar>(127.5f + normal.x*127.5f);
+            *(dst++) = static_cast<uchar>(127.5f + normal.y*127.5f);
+            *(dst++) = static_cast<uchar>(127.5f + normal.z*127.5f);
         }
     }
     replace(d);
 }
 
-bool ImageData::texturedata(const char *tname, bool msg, int *compress, int *wrap, const char *tdir, int ttype)
+bool ImageData::texturedata(const char *tname, bool msg, int * const compress, int * const wrap, const char *tdir, int ttype)
 {
+    auto parsetexcommands = [] (const char *&cmds, const char *&cmd, size_t &len, std::array<const char *, 4> &arg)
+    {
+        const char *end = nullptr;
+        cmd = &cmds[1];
+        end = std::strchr(cmd, '>');
+        if(!end)
+        {
+            return true;
+        }
+        cmds = std::strchr(cmd, '<');
+        len = std::strcspn(cmd, ":,><");
+        for(int i = 0; i < 4; ++i)
+        {
+            arg[i] = std::strchr(i ? arg[i-1] : cmd, i ? ',' : ':');
+            if(!arg[i] || arg[i] >= end)
+            {
+                arg[i] = "";
+            }
+            else
+            {
+                arg[i]++;
+            }
+        }
+        return false;
+    };
+
     const char *cmds = nullptr,
                *file = tname;
     if(tname[0]=='<')
@@ -705,7 +746,7 @@ bool ImageData::texturedata(const char *tname, bool msg, int *compress, int *wra
         {
             if(msg)
             {
-                conoutf(Console_Error, "could not load texture %s", tname);
+                conoutf(Console_Error, "could not load <> modified texture %s", tname);
             }
             return false;
         }
@@ -719,31 +760,15 @@ bool ImageData::texturedata(const char *tname, bool msg, int *compress, int *wra
     }
     for(const char *pcmds = cmds; pcmds;)
     {
-        #define PARSETEXCOMMANDS(cmds) \
-            const char *cmd = nullptr, \
-                       *end = nullptr, \
-                       *arg[4] = { nullptr, nullptr, nullptr, nullptr }; \
-            cmd = &cmds[1]; \
-            end = std::strchr(cmd, '>'); \
-            if(!end) \
-            { \
-                break; \
-            } \
-            cmds = std::strchr(cmd, '<'); \
-            size_t len = std::strcspn(cmd, ":,><"); \
-            for(int i = 0; i < 4; ++i) \
-            { \
-                arg[i] = std::strchr(i ? arg[i-1] : cmd, i ? ',' : ':'); \
-                if(!arg[i] || arg[i] >= end) \
-                { \
-                    arg[i] = ""; \
-                } \
-                else \
-                { \
-                    arg[i]++; \
-                } \
-            }
-        PARSETEXCOMMANDS(pcmds);
+        const char *cmd = nullptr;
+        size_t len = 0;
+        std::array<const char *, 4> arg = { nullptr, nullptr, nullptr, nullptr };
+
+        if(parsetexcommands(pcmds, cmd, len, arg))
+        {
+            break;
+        }
+
         if(matchstring(cmd, len, "stub"))
         {
             return canloadsurface(file);
@@ -780,7 +805,15 @@ bool ImageData::texturedata(const char *tname, bool msg, int *compress, int *wra
 
     while(cmds)
     {
-        PARSETEXCOMMANDS(cmds);
+        const char *cmd = nullptr;
+        size_t len = 0;
+        std::array<const char *, 4> arg = { nullptr, nullptr, nullptr, nullptr };
+
+        if(parsetexcommands(cmds, cmd, len, arg))
+        {
+            break;
+        }
+
         if(compressed)
         {
             goto compressed; //see `compressed` nested between else & if (yes it's ugly)
@@ -905,4 +938,58 @@ bool ImageData::texturedata(const char *tname, bool msg, int *compress, int *wra
 bool ImageData::texturedata(Slot &slot, Slot::Tex &tex, bool msg, int *compress, int *wrap)
 {
     return texturedata(tex.name, msg, compress, wrap, slot.texturedir(), tex.type);
+}
+
+void ImageData::reorientnormals(uchar * RESTRICT src, int sw, int sh, int bpp, int stride, uchar * RESTRICT dst, bool flipx, bool flipy, bool swapxy)
+{
+    int stridex = bpp,
+        stridey = bpp;
+    if(swapxy)
+    {
+        stridex *= sh;
+    }
+    else
+    {
+        stridey *= sw;
+    }
+    if(flipx)
+    {
+        dst += (sw-1)*stridex;
+        stridex = -stridex;
+    }
+    if(flipy)
+    {
+        dst += (sh-1)*stridey;
+        stridey = -stridey;
+    }
+    uchar *srcrow = src;
+    for(int i = 0; i < sh; ++i)
+    {
+        for(uchar *curdst = dst, *src = srcrow, *end = &srcrow[sw*bpp]; src < end;)
+        {
+            uchar nx = *src++, ny = *src++;
+            if(flipx)
+            {
+                nx = 255-nx;
+            }
+            if(flipy)
+            {
+                ny = 255-ny;
+            }
+            if(swapxy)
+            {
+                std::swap(nx, ny);
+            }
+            curdst[0] = nx;
+            curdst[1] = ny;
+            curdst[2] = *src++;
+            if(bpp > 3)
+            {
+                curdst[3] = *src++;
+            }
+            curdst += stridex;
+        }
+        srcrow += stride;
+        dst += stridey;
+    }
 }

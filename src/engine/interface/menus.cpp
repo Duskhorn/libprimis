@@ -23,8 +23,13 @@ namespace
 
         Change() {}
         Change(int type, const char *desc) : type(type), desc(desc) {}
+
+        bool operator==(const Change & c) const
+        {
+            return type == c.type && std::strcmp(desc, c.desc) == 0;
+        }
     };
-    vector<Change> needsapply;
+    std::vector<Change> needsapply;
 
     VARP(applydialog, 0, 1, 1);
 
@@ -36,9 +41,9 @@ namespace
     void applychanges()
     {
         int changetypes = 0;
-        for(int i = 0; i < needsapply.length(); i++)
+        for(const Change &i : needsapply)
         {
-            changetypes |= needsapply[i].type;
+            changetypes |= i.type;
         }
         if(changetypes&Change_Graphics)
         {
@@ -54,24 +59,21 @@ namespace
         }
     }
 
-    //executes applychanges()
-    COMMAND(applychanges, "");
-
     //returns if there are pending changes or not enqueued
-    void pendingchanges (int *idx)
+    void pendingchanges(int *idx)
     {
-        if(needsapply.inrange(*idx))
+        if(idx)
         {
-            result(needsapply[*idx].desc);
-        }
-        else if(*idx < 0)
-        {
-            intret(needsapply.length());
+            if((needsapply.size()) > static_cast<uint>(*idx))
+            {
+                result(needsapply.at(*idx).desc);
+            }
+            else if(*idx < 0)
+            {
+                intret(needsapply.size());
+            }
         }
     }
-    COMMAND(pendingchanges, "b");
-
-    int lastmainmenu = -1;
 }
 
 //externally relevant functionality
@@ -88,14 +90,14 @@ void addchange(const char *desc, int type)
     {
         return;
     }
-    for(int i = 0; i < needsapply.length(); i++)
+    for(const Change &i : needsapply)
     {
-        if(!std::strcmp(needsapply[i].desc, desc))
+        if(!std::strcmp(i.desc, desc))
         {
             return;
         }
     }
-    needsapply.add(Change(type, desc));
+    needsapply.push_back(Change(type, desc));
     if(showchanges)
     {
         UI::showui("changes");
@@ -110,7 +112,7 @@ void notifywelcome()
 //clears out pending changes added by addchange()
 void clearchanges(int type)
 {
-    for(int i = needsapply.length(); --i >=0;) //note reverse iteration
+    for(int i = needsapply.size(); --i >=0;) //note reverse iteration
     {
         Change &c = needsapply[i];
         if(c.type&type)
@@ -118,27 +120,14 @@ void clearchanges(int type)
             c.type &= ~type;
             if(!c.type)
             {
-                needsapply.remove(i);
+                auto it = std::find(needsapply.begin(), needsapply.end(), needsapply[i]);
+                needsapply.erase(it);
             }
         }
     }
     if(needsapply.empty())
     {
         UI::hideui("changes");
-    }
-}
-
-//used in main.cpp
-void menuprocess()
-{
-    if(lastmainmenu != mainmenu)
-    {
-        lastmainmenu = mainmenu;
-        execident("mainmenutoggled");
-    }
-    if(mainmenu && !multiplayer && !UI::hascursor())
-    {
-        UI::showui("main");
     }
 }
 
@@ -150,4 +139,10 @@ void clearmainmenu()
         mainmenu = 0;
         UI::hideui(nullptr);
     }
+}
+
+void initmenuscmds()
+{
+    addcommand("applychanges", reinterpret_cast<identfun>(applychanges), "", Id_Command);
+    addcommand("pendingchanges", reinterpret_cast<identfun>(pendingchanges), "b", Id_Command);
 }

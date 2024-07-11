@@ -10,10 +10,12 @@
 #include "../libprimis-headers/cube.h"
 #include "../../shared/geomexts.h"
 
+#include <memory>
+#include <optional>
+
 #include "interface/console.h"
 #include "interface/control.h"
 
-#include "render/radiancehints.h"
 #include "render/rendergl.h"
 
 #include "world/entities.h"
@@ -23,16 +25,6 @@
 
 #include "model.h"
 #include "ragdoll.h"
-
-FVAR(ragdollbodyfric, 0, 0.95f, 1);
-FVAR(ragdollbodyfricscale, 0, 2, 10);
-FVAR(ragdollwaterfric, 0, 0.85f, 1);
-FVAR(ragdollgroundfric, 0, 0.8f, 1);
-FVAR(ragdollairfric, 0, 0.996f, 1);
-FVAR(ragdollunstick, 0, 10, 1e3f);
-VAR(ragdollexpireoffset, 0, 2500, 30000);
-VAR(ragdollwaterexpireoffset, 0, 4000, 30000);
-
 
 /*               ragdollskel                  */
 
@@ -57,13 +49,12 @@ bool ragdollskel::tri::shareverts(const tri &t) const
 
 void ragdollskel::setupjoints()
 {
-    for(uint i = 0; i < verts.size(); i++)
+    for(vert &i : verts)
     {
-        verts[i].weight = 0;
+        i.weight = 0;
     }
-    for(uint i = 0; i < joints.size(); i++)
+    for(joint &j : joints)
     {
-        joint &j = joints[i];
         j.weight = 0;
         vec pos(0, 0, 0);
         for(int k = 0; k < 3; ++k)
@@ -92,11 +83,11 @@ void ragdollskel::setupjoints()
         m.d = pos;
         m.transpose();
     }
-    for(uint i = 0; i < verts.size(); i++)
+    for(vert &i : verts)
     {
-        if(verts[i].weight)
+        if(i.weight)
         {
-            verts[i].weight = 1/verts[i].weight;
+            i.weight = 1/i.weight;
         }
     }
     reljoints.clear();
@@ -104,16 +95,17 @@ void ragdollskel::setupjoints()
 
 void ragdollskel::setuprotfrictions()
 {
-    rotfrictions.shrink(0);
+    rotfrictions.clear();
     for(uint i = 0; i < tris.size(); i++)
     {
         for(uint j = i+1; j < tris.size(); j++)
         {
             if(tris[i].shareverts(tris[j]))
             {
-                rotfriction &r = rotfrictions.add();
+                rotfriction r;
                 r.tri[0] = i;
                 r.tri[1] = j;
+                rotfrictions.push_back(r);
             }
         }
     }
@@ -136,6 +128,36 @@ void ragdollskel::addreljoint(int bone, int parent)
 }
 /*                  ragdolldata                   */
 
+ragdolldata::ragdolldata(ragdollskel *skel, float scale)
+    : skel(skel),
+      millis(lastmillis),
+      collidemillis(0),
+      lastmove(lastmillis),
+      radius(0),
+      tris(skel->tris.size()),
+      animjoints(!skel->animjoints || skel->joints.empty() ? nullptr : new matrix4x3[skel->joints.size()]),
+      reljoints(skel->reljoints.empty() ? nullptr : new dualquat[skel->reljoints.size()]),
+      verts(skel->verts.size()),
+      collisions(0),
+      floating(0),
+      unsticks(INT_MAX),
+      timestep(0),
+      scale(scale)
+{
+}
+
+ragdolldata::~ragdolldata()
+{
+    if(animjoints)
+    {
+        delete[] animjoints;
+    }
+    if(reljoints)
+    {
+        delete[] reljoints;
+    }
+}
+
 /*
     seed particle position = avg(modelview * base2anim * spherepos)
     mapped transform = invert(curtri) * origtrig
@@ -148,7 +170,7 @@ void ragdolldata::calcanimjoint(int i, const matrix4x3 &anim)
     {
         return;
     }
-    ragdollskel::joint &j = skel->joints[i];
+    const ragdollskel::joint &j = skel->joints[i];
     vec pos(0, 0, 0);
     for(int k = 0; k < 3; ++k)
     {
@@ -159,7 +181,7 @@ void ragdolldata::calcanimjoint(int i, const matrix4x3 &anim)
     }
     pos.mul(j.weight);
 
-    ragdollskel::tri &t = skel->tris[j.tri];
+    const ragdollskel::tri &t = skel->tris[j.tri];
     matrix4x3 m;
     const vec &v1 = verts[t.vert[0]].pos,
               &v2 = verts[t.vert[1]].pos,
@@ -175,7 +197,7 @@ void ragdolldata::calctris()
 {
     for(uint i = 0; i < skel->tris.size(); i++)
     {
-        ragdollskel::tri &t = skel->tris[i];
+        const ragdollskel::tri &t = skel->tris[i];
         matrix3 &m = tris[i];
         const vec &v1 = verts[t.vert[0]].pos,
                   &v2 = verts[t.vert[1]].pos,
@@ -189,29 +211,27 @@ void ragdolldata::calctris()
 void ragdolldata::calcboundsphere()
 {
     center = vec(0, 0, 0);
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(const vert &v : verts)
     {
-        center.add(verts[i].pos);
+        center.add(v.pos);
     }
-    center.div(skel->verts.size());
+    center.div(verts.size());
     radius = 0;
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(const vert &v : verts)
     {
-        radius = std::max(radius, verts[i].pos.dist(center));
+        radius = std::max(radius, v.pos.dist(center));
     }
 }
 
 VAR(ragdolltimestepmin, 1, 5, 50);
 VAR(ragdolltimestepmax, 1, 10, 50);
-FVAR(ragdollrotfric, 0, 0.85f, 1);
-FVAR(ragdollrotfricstop, 0, 0.1f, 1);
 
-void ragdolldata::init(dynent *d)
+void ragdolldata::init(const dynent *d)
 {
     float ts = ragdolltimestepmin/1000.0f;
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(vert &v : verts)
     {
-        (verts[i].oldpos = verts[i].pos).sub(vec(d->vel).add(d->falling).mul(ts));
+        (v.oldpos = v.pos).sub(vec(d->vel).add(d->falling).mul(ts));
     }
     timestep = ts;
 
@@ -224,14 +244,12 @@ void ragdolldata::init(dynent *d)
 
 void ragdolldata::constraindist()
 {
-    float invscale = 1.0f/scale;
-    for(uint i = 0; i < skel->distlimits.size(); i++)
+    for(const ragdollskel::distlimit &d : skel->distlimits)
     {
-        ragdollskel::distlimit &d = skel->distlimits[i];
         vert &v1 = verts[d.vert[0]],
              &v2 = verts[d.vert[1]];
         vec dir = vec(v2.pos).sub(v1.pos);
-        float dist = dir.magnitude()*invscale,
+        float dist = dir.magnitude()/scale,
               cdist;
         if(dist < d.mindist)
         {
@@ -251,7 +269,7 @@ void ragdolldata::constraindist()
         }
         else
         {
-            dir = vec(0, 0, cdist*0.5f/invscale);
+            dir = vec(0, 0, cdist*0.5f*scale);
         }
         vec center = vec(v1.pos).add(v2.pos).mul(0.5f);
         v1.newpos.add(vec(center).sub(dir));
@@ -261,7 +279,7 @@ void ragdolldata::constraindist()
     }
 }
 
-void ragdolldata::applyrotlimit(ragdollskel::tri &t1, ragdollskel::tri &t2, float angle, const vec &axis)
+void ragdolldata::applyrotlimit(const ragdollskel::tri &t1, const ragdollskel::tri &t2, float angle, const vec &axis)
 {
     vert &v1a = verts[t1.vert[0]],
          &v1b = verts[t1.vert[1]],
@@ -303,9 +321,8 @@ void ragdolldata::applyrotlimit(ragdollskel::tri &t1, ragdollskel::tri &t2, floa
 void ragdolldata::constrainrot()
 {
     calctris();
-    for(int i = 0; i < skel->rotlimits.length(); i++)
+    for(const ragdollskel::rotlimit &r : skel->rotlimits)
     {
-        ragdollskel::rotlimit &r = skel->rotlimits[i];
         matrix3 rot;
         rot.mul(tris[r.tri[0]], r.middle);
         rot.multranspose(tris[r.tri[1]]);
@@ -324,21 +341,22 @@ void ragdolldata::constrainrot()
 
 void ragdolldata::calcrotfriction()
 {
-    for(int i = 0; i < skel->rotfrictions.length(); i++)
+    for(ragdollskel::rotfriction &r : skel->rotfrictions)
     {
-        ragdollskel::rotfriction &r = skel->rotfrictions[i];
         r.middle.transposemul(tris[r.tri[0]], tris[r.tri[1]]);
     }
 }
 
 void ragdolldata::applyrotfriction(float ts)
 {
+    static FVAR(ragdollrotfric, 0, 0.85f, 1);
+    static FVAR(ragdollrotfricstop, 0, 0.1f, 1);
+
     calctris();
     float stopangle = 2*M_PI*ts*ragdollrotfricstop,
           rotfric = 1.0f - std::pow(ragdollrotfric, ts*1000.0f/ragdolltimestepmin);
-    for(int i = 0; i < skel->rotfrictions.length(); i++)
+    for(const ragdollskel::rotfriction &r : skel->rotfrictions)
     {
-        ragdollskel::rotfriction &r = skel->rotfrictions[i];
         matrix3 rot;
         rot.mul(tris[r.tri[0]], r.middle);
         rot.multranspose(tris[r.tri[1]]);
@@ -352,9 +370,8 @@ void ragdolldata::applyrotfriction(float ts)
         angle *= -(std::fabs(angle) >= stopangle ? rotfric : 1.0f);
         applyrotlimit(skel->tris[r.tri[0]], skel->tris[r.tri[1]], angle, axis);
     }
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(vert &v : verts)
     {
-        vert &v = verts[i];
         if(!v.weight)
         {
             continue;
@@ -368,8 +385,8 @@ void ragdolldata::applyrotfriction(float ts)
 void ragdolldata::tryunstick(float speed)
 {
     vec unstuck(0, 0, 0);
-    int stuck = 0;
-    for(uint i = 0; i < skel->verts.size(); i++)
+    size_t stuck = 0;
+    for(uint i = 0; i < verts.size(); i++)
     {
         vert &v = verts[i];
         if(v.stuck)
@@ -384,14 +401,13 @@ void ragdolldata::tryunstick(float speed)
         unstuck.add(v.pos);
     }
     unsticks = 0;
-    if(!stuck || stuck >= static_cast<int>(skel->verts.size()))
+    if(!stuck || stuck >= verts.size())
     {
         return;
     }
-    unstuck.div(skel->verts.size() - stuck);
-    for(uint i = 0; i < skel->verts.size(); i++)
+    unstuck.div(verts.size() - stuck);
+    for(vert &v : verts)
     {
-        vert &v = verts[i];
         if(v.stuck)
         {
             v.pos.add(vec(unstuck).sub(v.pos).rescale(speed));
@@ -400,17 +416,15 @@ void ragdolldata::tryunstick(float speed)
     }
 }
 
-VAR(ragdollconstrain, 1, 7, 100); //number of iterations to run ragdolldata::constrain() for
-
 void ragdolldata::constrain()
 {
+    static VAR(ragdollconstrain, 1, 7, 100); //number of iterations to run ragdolldata::constrain() for
     //note: this for loop does not use the loop variable `i` anywhere
     for(int i = 0; i < ragdollconstrain; ++i)
     {
         constraindist();
-        for(uint j = 0; j < skel->verts.size(); j++)
+        for(vert &v : verts)
         {
-            vert &v = verts[j];
             v.undo = v.pos;
             if(v.weight)
             {
@@ -421,7 +435,7 @@ void ragdolldata::constrain()
         }
 
         constrainrot();
-        for(uint j = 0; j < skel->verts.size(); j++)
+        for(uint j = 0; j < verts.size(); j++)
         {
             vert &v = verts[j];
             if(v.weight)
@@ -447,33 +461,44 @@ void ragdolldata::constrain()
 
 void ragdolldata::move(dynent *pl, float ts)
 {
+
+    static FVAR(ragdollbodyfric, 0, 0.95f, 1);
+    static FVAR(ragdollbodyfricscale, 0, 2, 10);
+    static FVAR(ragdollwaterfric, 0, 0.85f, 1);
+    static FVAR(ragdollgroundfric, 0, 0.8f, 1);
+    static FVAR(ragdollairfric, 0, 0.996f, 1);
+    static FVAR(ragdollunstick, 0, 10, 1e3f);
+    static VAR(ragdollexpireoffset, 0, 2500, 30000);
+    static VAR(ragdollwaterexpireoffset, 0, 4000, 30000);
+
     if(collidemillis && lastmillis > collidemillis)
     {
         return;
     }
-    int material = rootworld.lookupmaterial(vec(center.x, center.y, center.z + radius/2));
-    bool water = IS_LIQUID(material&MatFlag_Volume);
+    const int material = rootworld.lookupmaterial(vec(center.x, center.y, center.z + radius/2));
+    const bool water = (material&MatFlag_Volume) == Mat_Water;
     pl->inwater = water ? material&MatFlag_Volume : Mat_Air;
 
     calcrotfriction();
-    float tsfric = timestep ? ts/timestep : 1,
-          airfric = ragdollairfric + std::min((ragdollbodyfricscale*collisions)/skel->verts.size(), 1.0f)*(ragdollbodyfric - ragdollairfric);
+    const float tsfric = timestep ? ts/timestep : 1,
+                airfric = ragdollairfric + std::min((ragdollbodyfricscale*collisions)/verts.size(), 1.0f)*(ragdollbodyfric - ragdollairfric);
     collisions = 0;
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(uint i = 0; i < verts.size(); i++)
     {
         vert &v = verts[i];
         vec dpos = vec(v.pos).sub(v.oldpos);
-        dpos.z -= gravity*ts*ts;
+        dpos.z -= 100*ts*ts;
         if(water)
         {
-            dpos.z += 0.25f*std::sin(detrnd(size_t(this)+i, 360)*RAD + lastmillis/10000.0f*M_PI)*ts;
+            //reinterpret cast pointer -> "random" seed value
+            dpos.z += 0.25f*std::sin(detrnd(reinterpret_cast<size_t>(this)+i, 360)/RAD + lastmillis/10000.0f*M_PI)*ts;
         }
         dpos.mul(std::pow((water ? ragdollwaterfric : 1.0f) * (v.collided ? ragdollgroundfric : airfric), ts*1000.0f/ragdolltimestepmin)*tsfric);
         v.oldpos = v.pos;
         v.pos.add(dpos);
     }
     applyrotfriction(ts);
-    for(uint i = 0; i < skel->verts.size(); i++)
+    for(uint i = 0; i < verts.size(); i++)
     {
         vert &v = verts[i];
         if(v.pos.z < 0)
@@ -513,18 +538,36 @@ void ragdolldata::move(dynent *pl, float ts)
     calcboundsphere();
 }
 
-FVAR(ragdolleyesmooth, 0, 0.5f, 1);
-VAR(ragdolleyesmoothmillis, 1, 250, 10000);
+bool ragdolldata::collidevert(const vec &pos, const vec &dir, float radius)
+{
+    static struct vertent : physent
+    {
+        vertent()
+        {
+            type = PhysEnt_Bounce;
+            radius = xradius = yradius = eyeheight = aboveeye = 1;
+        }
+    } v;
+    v.o = pos;
+    if(v.radius != radius)
+    {
+        v.radius = v.xradius = v.yradius = v.eyeheight = v.aboveeye = radius;
+    }
+    return collide(&v, dir, 0, false);
+}
 
+//used in iengine
 void moveragdoll(dynent *d)
 {
+    static FVAR(ragdolleyesmooth, 0, 0.5f, 1);
+    static VAR(ragdolleyesmoothmillis, 1, 250, 10000);
     if(!curtime || !d->ragdoll)
     {
         return;
     }
     if(!d->ragdoll->collidemillis || lastmillis < d->ragdoll->collidemillis)
     {
-        int lastmove = d->ragdoll->lastmove;
+        const int lastmove = d->ragdoll->lastmove;
         while(d->ragdoll->lastmove + (lastmove == d->ragdoll->lastmove ? ragdolltimestepmin : ragdolltimestepmax) <= lastmillis)
         {
             int timestep = std::min(ragdolltimestepmax, lastmillis - d->ragdoll->lastmove);
@@ -535,7 +578,7 @@ void moveragdoll(dynent *d)
 
     vec eye = d->ragdoll->skel->eye >= 0 ? d->ragdoll->verts[d->ragdoll->skel->eye].pos : d->ragdoll->center;
     eye.add(d->ragdoll->offset);
-    float k = std::pow(ragdolleyesmooth, static_cast<float>(curtime)/ragdolleyesmoothmillis);
+    const float k = std::pow(ragdolleyesmooth, static_cast<float>(curtime)/ragdolleyesmoothmillis);
     d->o.lerp(eye, 1-k);
 }
 

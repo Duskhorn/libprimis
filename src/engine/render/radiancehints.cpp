@@ -28,6 +28,8 @@
 #include "rendertimers.h"
 #include "renderva.h"
 #include "renderwindow.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/control.h"
@@ -35,8 +37,8 @@
 #include "world/light.h"
 #include "world/world.h"
 
-GLuint rhtex[8] = { 0, 0, 0, 0, 0, 0, 0, 0 },
-       rhfbo = 0;
+std::array<GLuint, 8> rhtex = { 0, 0, 0, 0, 0, 0, 0, 0 };
+GLuint rhfbo = 0;
 
 //radiance hints (global illumination) vars
 VARF(rhsplits, 1, 2, rhmaxsplits, { cleardeferredlightshaders(); cleanupradiancehints(); }); //`r`adiance `h`ints `splits`: number of radiance hints subdivisions
@@ -103,8 +105,8 @@ namespace //internal functionality
     GLuint rsmdepthtex = 0,
            rsmcolortex = 0,
            rsmnormaltex = 0,
-           rsmfbo = 0,
-           rhrb[4] = { 0, 0, 0, 0 };
+           rsmfbo = 0;
+    std::array<GLuint, 4> rhrb = {0, 0, 0, 0};
 
     Shader *radiancehintsshader = nullptr;
 
@@ -173,10 +175,10 @@ namespace //internal functionality
 
 void viewrsm()
 {
-    int w = std::min(hudw, hudh)/2,
-        h = (w*hudh)/hudw,
-        x = hudw-w,
-        y = hudh-h;
+    int w = std::min(hudw(), hudh())/2,
+        h = (w*hudh())/hudw(),
+        x = hudw()-w,
+        y = hudh()-h;
     SETSHADER(hudrect);
     gle::colorf(1, 1, 1);
     glBindTexture(GL_TEXTURE_RECTANGLE, debugrsm == 2 ? rsmnormaltex : rsmcolortex);
@@ -210,7 +212,7 @@ void setupradiancehints()
 
     if(rhrect)
     {
-        for(int i = 0; i < 4; ++i)
+        for(uint i = 0; i < rhrb.size(); ++i)
         {
             if(!rhrb[i])
             {
@@ -230,8 +232,14 @@ void setupradiancehints()
         }
     }
 
-    static const GLenum drawbufs[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
-    glDrawBuffers(4, drawbufs);
+    static const std::array<GLenum, 4> drawbufs =
+    {
+        GL_COLOR_ATTACHMENT0,
+        GL_COLOR_ATTACHMENT1,
+        GL_COLOR_ATTACHMENT2,
+        GL_COLOR_ATTACHMENT3
+    };
+    glDrawBuffers(4, drawbufs.data());
 
     if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     {
@@ -266,7 +274,7 @@ void setupradiancehints()
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, rsmcolortex, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_RECTANGLE, rsmnormaltex, 0);
 
-    glDrawBuffers(2, drawbufs);
+    glDrawBuffers(2, drawbufs.data());
 
     if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     {
@@ -281,19 +289,20 @@ void cleanupradiancehints()
 {
     clearradiancehintscache();
 
-    for(int i = 0; i < 8; ++i)
+    for(GLuint &i : rhtex)
     {
-        if(rhtex[i])
+        if(i)
         {
-            glDeleteTextures(1, &rhtex[i]);
-            rhtex[i] = 0;
+            glDeleteTextures(1, &i);
+            i = 0;
         }
     }
-    for(int i = 0; i < 4; ++i)
+    for(GLuint &i : rhrb)
     {
-        if(rhrb[i])
+        if(i)
         {
-            glDeleteRenderbuffers(1, &rhrb[i]); rhrb[i] = 0;
+            glDeleteRenderbuffers(1, &i);
+            i = 0;
         }
     }
     if(rhfbo)
@@ -327,10 +336,10 @@ void cleanupradiancehints()
 
 void viewrh()
 {
-    int w = std::min(hudw, hudh)/2,
-        h = (w*hudh)/hudw,
-        x = hudw-w,
-        y = hudh-h;
+    int w = std::min(hudw(), hudh())/2,
+        h = (w*hudh())/hudw(),
+        x = hudw()-w,
+        y = hudh()-h;
     gle::colorf(1, 1, 1);
     if(debugrh < 0 && rhrect)
     {
@@ -366,12 +375,12 @@ void viewrh()
 void clearradiancehintscache()
 {
     rh.clearcache();
-    memset(rhclearmasks, 0, sizeof(rhclearmasks));
+    std::memset(rhclearmasks, 0, sizeof(rhclearmasks));
 }
 
 bool useradiancehints()
 {
-    return !sunlight.iszero() && csmshadowmap && gi && giscale && gidist;
+    return !sunlight.iszero() && csm.getcsmproperty(cascadedshadowmap::ShadowMap) && gi && giscale && gidist;
 }
 
 //============================= radiance hints object ==========================//
@@ -401,7 +410,7 @@ void radiancehints::setup()
         splitinfo &split = splits[i];
 
         vec c;
-        float radius = calcfrustumboundsphere(split.nearplane, split.farplane, camera1->o, camdir, c);
+        float radius = calcfrustumboundsphere(split.nearplane, split.farplane, camera1->o, camdir(), c);
 
         // compute the projected bounding box of the sphere
         const float pradius = std::ceil(radius * rhpradiustweak),
@@ -421,15 +430,15 @@ void radiancehints::setup()
     }
 }
 
-void radiancehints::bindparams()
+void radiancehints::bindparams() const
 {
     float step = 2*splits[0].bounds/rhgrid;
     GLOBALPARAMF(rhnudge, rhnudge*step);
     static GlobalShaderParam rhtc("rhtc");
-    vec4<float> *rhtcv = rhtc.reserve<vec4<float>>(rhsplits);
+    vec4<float> *rhtcv = rhtc.reserve<vec4<float>>();
     for(int i = 0; i < rhsplits; ++i)
     {
-        splitinfo &split = splits[i];
+        const splitinfo &split = splits[i];
         rhtcv[i] = vec4<float>(vec(split.center).mul(-split.scale.x), split.scale.x);//split.bounds*(1 + rhborder*2*0.5f/rhgrid));
     }
     GLOBALPARAMF(rhbounds, 0.5f*(rhgrid + rhborder)/static_cast<float>(rhgrid + 2*rhborder));
@@ -438,21 +447,48 @@ void radiancehints::bindparams()
 
 void radiancehints::clearcache()
 {
-    for(int i = 0; i < rhmaxsplits; ++i)
+    for(splitinfo &i : splits)
     {
-        splits[i].clearcache();
+        i.clearcache();
     }
 }
 bool radiancehints::allcached() const
 {
-    for(int i = 0; i < rhsplits; ++i)
+    for(const splitinfo &i : splits)
     {
-        if(splits[i].cached != splits[i].center)
+        if(i.cached != i.center)
         {
             return false;
         }
     }
     return true;
+}
+
+void radiancehints::rotatedynlimits()
+{
+    prevdynmin = dynmin;
+    prevdynmax = dynmax;
+}
+
+bool radiancehints::checkprevbounds()
+{
+    return prevdynmin.z < rh.prevdynmax.z;
+}
+
+static void bindslice(int sx, int sy, int sw, int sh, int i, int j)
+{
+    if(rhrect)
+    {
+        glViewport(sx, sy, sw, sh);
+        glScissor(sx, sy, sw, sh);
+    }
+    else
+    {
+        glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_3D, rhtex[0], 0, i*sh + j);
+        glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_3D, rhtex[1], 0, i*sh + j);
+        glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_3D, rhtex[2], 0, i*sh + j);
+        glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_3D, rhtex[3], 0, i*sh + j);
+    }
 }
 
 void radiancehints::renderslices()
@@ -465,14 +501,14 @@ void radiancehints::renderslices()
         glViewport(0, 0, sw, sh);
         if(rhcache)
         {
-            for(int i = 0; i < 4; ++i)
+            for(size_t i = 0; i < rhtex.size()/2; ++i)
             {
-                std::swap(rhtex[i], rhtex[i+4]);
+                std::swap(rhtex[i], rhtex[i+rhtex.size()/2]);
             }
             uint clearmasks[rhmaxsplits][(rhmaxgrid+2+31)/32];
-            memcpy(clearmasks, rhclearmasks[0], sizeof(clearmasks));
-            memcpy(rhclearmasks[0], rhclearmasks[1], sizeof(clearmasks));
-            memcpy(rhclearmasks[1], clearmasks, sizeof(clearmasks));
+            std::memcpy(clearmasks, rhclearmasks[0], sizeof(clearmasks));
+            std::memcpy(rhclearmasks[0], rhclearmasks[1], sizeof(clearmasks));
+            std::memcpy(rhclearmasks[1], clearmasks, sizeof(clearmasks));
         }
     }
 
@@ -494,27 +530,27 @@ void radiancehints::renderslices()
     GLOBALPARAM(rsmworldmatrix, rsmworldmatrix);
 
     glBindTexture(GL_TEXTURE_RECTANGLE, rsmdepthtex);
-    glActiveTexture_(GL_TEXTURE1);
+    glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_RECTANGLE, rsmcolortex);
-    glActiveTexture_(GL_TEXTURE2);
+    glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_RECTANGLE, rsmnormaltex);
     if(rhborder)
     {
-        for(int i = 0; i < 4; ++i)
+        for(size_t i = 0; i < rhtex.size()/2; ++i)
         {
-            glActiveTexture_(GL_TEXTURE3 + i);
+            glActiveTexture(GL_TEXTURE3 + i);
             glBindTexture(GL_TEXTURE_3D, rhtex[i]);
         }
     }
     if(rhcache)
     {
-        for(int i = 0; i < 4; ++i)
+        for(size_t i = 0; i < rhtex.size()/2; ++i)
         {
-            glActiveTexture_(GL_TEXTURE7 + i);
-            glBindTexture(GL_TEXTURE_3D, rhtex[rhrect ? i : 4+i]);
+            glActiveTexture(GL_TEXTURE7 + i);
+            glBindTexture(GL_TEXTURE_3D, rhtex[rhrect ? i :  rhtex.size()/2+i]);
         }
     }
-    glActiveTexture_(GL_TEXTURE0);
+    glActiveTexture(GL_TEXTURE0);
     glClearColor(0.5f, 0.5f, 0.5f, 0);
     if(rhrect)
     {
@@ -568,9 +604,9 @@ void radiancehints::renderslices()
                 continue;
             }
             split.copied = true;
-            for(int k = 0; k < 4; ++k)
+            for(size_t k = 0; k <  rhtex.size()/2; ++k)
             {
-                glCopyImageSubData_(rhtex[4+k], GL_TEXTURE_3D, 0, 0, 0, i*sh, rhtex[k], GL_TEXTURE_3D, 0, 0, 0, i*sh, sw, sh, sh);
+                glCopyImageSubData_(rhtex[rhtex.size()/2+k], GL_TEXTURE_3D, 0, 0, 0, i*sh, rhtex[k], GL_TEXTURE_3D, 0, 0, 0, i*sh, sw, sh, sh);
             }
             continue;
         }
@@ -597,27 +633,12 @@ void radiancehints::renderslices()
         }
 
         uint clearmasks[(rhmaxgrid+2+31)/32];
-        memset(clearmasks, 0xFF, sizeof(clearmasks));
+        std::memset(clearmasks, 0xFF, sizeof(clearmasks));
 
         int sy = rhrect ? i*sh : 0;
         for(int j = sh; --j >= 0;) //note reverse iteration
         {
             int sx = rhrect ? j*sw : 0;
-//=================================================================== BIND_SLICE
-            #define BIND_SLICE do { \
-                if(rhrect) \
-                { \
-                    glViewport(sx, sy, sw, sh); \
-                    glScissor(sx, sy, sw, sh); \
-                } \
-                else \
-                { \
-                    glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_3D, rhtex[0], 0, i*sh + j); \
-                    glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_3D, rhtex[1], 0, i*sh + j); \
-                    glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_3D, rhtex[2], 0, i*sh + j); \
-                    glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_3D, rhtex[3], 0, i*sh + j); \
-                } \
-            } while(0)
 
             float x1  = split.center.x - split.bounds,
                   x2  = split.center.x + split.bounds,
@@ -679,7 +700,7 @@ void radiancehints::renderslices()
                 bty1 = bty1*next.scale.y + next.offset.y;
                 bty2 = bty2*next.scale.y + next.offset.y;
                 bz = bz*next.scale.z + next.offset.z;
-                BIND_SLICE;
+                bindslice(sx, sy, sw, sh, i, j);
                 if(clipped)
                 {
                     glClear(GL_COLOR_BUFFER_BIT);
@@ -695,7 +716,7 @@ void radiancehints::renderslices()
             skipped:
                 if(clearmasks[j/32] & (1 << (j%32)) && (!rhrect || cx < 0) && !(rhclearmasks[0][i][j/32] & (1 << (j%32))))
                 {
-                    BIND_SLICE;
+                    bindslice(sx, sy, sw, sh, i, j);
                     glClear(GL_COLOR_BUFFER_BIT);
                     cx = sx;
                     cy = sy;
@@ -728,16 +749,13 @@ void radiancehints::renderslices()
             }
             if(clearmasks[j/32] & (1 << (j%32)))
             {
-                BIND_SLICE;
+                bindslice(sx, sy, sw, sh, i, j);
                 if(clipped || (rhborder && i + 1 >= rhsplits))
                 {
                     glClear(GL_COLOR_BUFFER_BIT);
                 }
                 clearmasks[j/32] &= ~(1 << (j%32));
             }
-
-            #undef BIND_SLICE
-//==============================================================================
 
             if(rhcache && z > split.cached.z - split.bounds && z < split.cached.z + split.bounds)
             {
@@ -816,7 +834,7 @@ void radiancehints::renderslices()
                 }
             }
             gle::defvertex(2);
-            gle::begin(GL_QUADS);
+            gle::begin(GL_TRIANGLES);
             gle::end();
             if(rhborder && !rhrect)
             {
@@ -837,15 +855,15 @@ void radiancehints::renderslices()
                     {
                         if(!(rhclearmasks[0][i][j/32] & (1 << (j%32))))
                         {
-                            glCopyTexSubImage3D_(GL_TEXTURE_3D, 0, 0, 0, sy+j, cx, cy, sw, sh);
+                            glCopyTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, sy+j, cx, cy, sw, sh);
                         }
                         continue;
                     }
-                    glCopyTexSubImage3D_(GL_TEXTURE_3D, 0, 0, 0, sy+j, j*sw, sy, sw, sh);
+                    glCopyTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, sy+j, j*sw, sy, sw, sh);
                 }
             }
         }
-        memcpy(rhclearmasks[0][i], clearmasks, sizeof(clearmasks));
+        std::memcpy(rhclearmasks[0][i], clearmasks, sizeof(clearmasks));
     }
     if(rhrect)
     {
@@ -853,7 +871,7 @@ void radiancehints::renderslices()
     }
 }
 
-void GBuffer::renderradiancehints()
+void GBuffer::renderradiancehints() const
 {
     if(rhinoq && !inoq && shouldworkinoq())
     {
@@ -882,8 +900,7 @@ void GBuffer::renderradiancehints()
     shadowmaskbatchedmodels(false);
     batchshadowmapmodels();
 
-    rh.prevdynmin = rh.dynmin;
-    rh.prevdynmax = rh.dynmax;
+    rh.rotatedynlimits();
     rh.dynmin = vec(1e16f, 1e16f, 1e16f);
     rh.dynmax = vec(-1e16f, -1e16f, -1e16f);
     if(rhdyntex)
@@ -894,7 +911,7 @@ void GBuffer::renderradiancehints()
     {
         batcheddynamicmodelbounds(1<<shadowside, rh.dynmin, rh.dynmax);
     }
-    if(rhforce || rh.prevdynmin.z < rh.prevdynmax.z || rh.dynmin.z < rh.dynmax.z || !rh.allcached())
+    if(rhforce || rh.checkprevbounds() || rh.dynmin.z < rh.dynmax.z || !rh.allcached())
     {
         if(inoq)
         {
@@ -943,8 +960,8 @@ void reflectiveshadowmap::setup()
 void reflectiveshadowmap::getmodelmatrix()
 {
     model = viewmatrix;                             //copy global view matrix
-    model.rotate_around_x(sunlightpitch*RAD);       //orient camera in same yaw as sunlight
-    model.rotate_around_z((180-sunlightyaw)*RAD);   //orient camera in same pitch as sunlight
+    model.rotate_around_x(sunlightpitch/RAD);       //orient camera in same yaw as sunlight
+    model.rotate_around_z((180-sunlightyaw)/RAD);   //orient camera in same pitch as sunlight
 }
 
 void reflectiveshadowmap::getprojmatrix()
@@ -957,7 +974,7 @@ void reflectiveshadowmap::getprojmatrix()
     minz -= zmargin;
     maxz += zmargin;
     vec c;
-    float radius = calcfrustumboundsphere(rhnearplane, rhfarplane, camera1->o, camdir, c);
+    float radius = calcfrustumboundsphere(rhnearplane, rhfarplane, camera1->o, camdir(), c);
     // compute the projected bounding box of the sphere
     vec tc;
     model.transform(c, tc);
@@ -983,8 +1000,8 @@ void reflectiveshadowmap::gencullplanes()
     matrix4 mvp;
     mvp.mul(proj, model);
     vec4<float> px = mvp.rowx(),
-         py = mvp.rowy(),
-         pw = mvp.roww();
+                py = mvp.rowy(),
+                pw = mvp.roww();
     cull[0] = plane(vec4<float>(pw).add(px)).normalize(); // left plane
     cull[1] = plane(vec4<float>(pw).sub(px)).normalize(); // right plane
     cull[2] = plane(vec4<float>(pw).add(py)).normalize(); // bottom plane

@@ -5,144 +5,148 @@ enum
 {
     MDL_MD5 = 0,
     MDL_OBJ,
+    MDL_GLTF,
     MDL_NumMDLTypes
 };
 
-/* model: the base class for an ingame model
+/* model: the base class for an ingame model, with only pure virtual methods,
+ * all methods are defined in animmodel or one of its defined classes
  *
  * extended by animmodel (animated model) which is itself extended by skelmodel
+ * and vertmodel
  *
  * a model format loader (e.g. md5 or obj) extends model or one of its children
  * and assigns the data from the file format into the object (by setting its
  * fields and overriding its methods)
+ *
+ * model class hierarchy (all are objects except bottom gvars)
+ *
+ *      /-------\
+ *      | model |
+ *      \-------/
+ *          |
+ *          v
+ *      /-----------\
+ *      | animmodel |
+ *      \-----------/
+ *          |     \__________
+ *          v                \
+ *      /-----------\         v
+ *      | skelmodel |       /-----------\
+ *      \-----------/       | vertmodel |
+ *        |                 \-----------/
+ *        |     /-------------\       |
+ *        |     | modelloader |       |
+ *        |     \-------------/       |
+ *        |            |              |
+ *        \__________/ \_____________/  <-- multiple inheritance via template class
+ *              |                 |
+ *              v                 v
+ *          /------------\        /------------\
+ *          | skelloader |        | vertloader |
+ *          \------------/        \------------/
+ *     _______|    |                           |
+ *    |            v     /---------------\     v
+ * /----\     /-----\    | modelcommands |    /-----\
+ * |gltf|  -->| md5 |    \---------------/    | obj |<-
+ * \----/  |  \-----/        |        |       \-----/ |
+ *  ^ |    |   |             v        v            |  |
+ *  | |    |   | /--------------\ /--------------\ |  |
+ *  | |    |   | | skelcommands | | vertcommands | |  |
+ *  | |    |   | \--------------/ \--------------/ |  |
+ *  | |    |   |   |           |               |   |  |
+ *  | |    |   v   v           |               v   v  |
+ *  | | /-------------------\  | /-------------------\
+ *  | | | skelcommands<md5> |  | | vertcommands<obj> |
+ *  | | | md5::md5commands  |  | | obj::objcommands  |
+ *  | | \---static field----/  | \---static field----/
+ *  | v                       /
+ *  /--------------------\   /
+ *  | skelcommands<gltf> |<-/
+ *  | gltf::gltfcommands |
+ *  \----static field----/
  */
 class model
 {
     public:
-        char *name;
-        float spinyaw, spinpitch, spinroll, offsetyaw, offsetpitch, offsetroll;
+        //for spin, orientation: x = yaw, y = pitch, z = roll
+        vec orientation;
         bool shadow, alphashadow, depthoffset;
-        float scale;
-        vec translate;
-        BIH *bih;
+        std::unique_ptr<BIH> bih;
         vec bbextend;
         float eyeheight, collidexyradius, collideheight;
-        char *collidemodel;
+        std::string collidemodel;
         int collide, batch;
 
-        model(const char *name) : name(name ? newstring(name) : nullptr),
-                                  spinyaw(0),
-                                  spinpitch(0),
-                                  spinroll(0),
-                                  offsetyaw(0),
-                                  offsetpitch(0),
-                                  offsetroll(0),
+        virtual ~model() = default;
+        virtual void calcbb(vec &, vec &) const = 0;
+        virtual void calctransform(matrix4x3 &) const = 0;
+        virtual int intersect(int, int, int, const vec &, float, float, float, dynent *, modelattach *, float, const vec &, const vec &, float &) const = 0;
+        virtual void render(int, int, int, const vec&, float, float, float , dynent *, modelattach * = nullptr, float = 1, const vec4<float>& = vec4<float>(1, 1, 1, 1)) const = 0;
+        virtual bool load() = 0;
+        virtual int type() const = 0;
+        virtual bool setBIH() = 0;
+        virtual bool skeletal() const = 0;
+        virtual bool animated() const = 0;
+        virtual bool pitched() const = 0;
+        virtual bool alphatested() const = 0;
+
+        virtual void setshader(Shader *) = 0;
+        virtual void setspec(float) = 0;
+        virtual void setgloss(int) = 0;
+        virtual void setglow(float, float, float) = 0;
+        virtual void setalphatest(float) = 0;
+        virtual void setfullbright(float) = 0;
+        virtual void setcullface(int) = 0;
+        virtual void setcolor(const vec &) = 0;
+        virtual void settransformation(const std::optional<vec>,
+                                       const std::optional<vec>,
+                                       const std::optional<vec>,
+                                       const std::optional<float>) = 0;
+        //returns the location and size of the model
+        virtual vec4<float> locationsize() const = 0;
+        virtual void genshadowmesh(std::vector<triangle> &, const matrix4x3 &) = 0;
+
+        virtual void preloadBIH() = 0;
+        virtual void preloadshaders() = 0;
+        virtual void preloadmeshes() = 0;
+        virtual void cleanup() = 0;
+        virtual void startrender() const = 0;
+        virtual void endrender() const = 0;
+        virtual void boundbox(vec &center, vec &radius) = 0;
+        virtual float collisionbox(vec &center, vec &radius) = 0;
+        virtual float above() = 0;
+        virtual const std::string &modelname() const = 0;
+
+    protected:
+        vec translate,
+            spin;
+        float scale;
+        std::string name;
+        vec bbcenter, bbradius, collidecenter, collideradius;
+        float rejectradius;
+
+        model(std::string name) : orientation(0, 0, 0),
                                   shadow(true),
                                   alphashadow(true),
                                   depthoffset(false),
-                                  scale(1.0f),
-                                  translate(0, 0, 0),
-                                  bih(0),
                                   bbextend(0, 0, 0),
                                   eyeheight(0.9f),
                                   collidexyradius(0),
                                   collideheight(0),
-                                  collidemodel(nullptr),
+                                  collidemodel(""),
                                   collide(Collide_OrientedBoundingBox),
-                                  batch(-1), bbcenter(0, 0, 0),
+                                  batch(-1),
+                                  translate(0, 0, 0),
+                                  spin(0, 0, 0),
+                                  scale(1.0f),
+                                  name(name),
+                                  bbcenter(0, 0, 0),
                                   bbradius(-1, -1, -1),
                                   collidecenter(0, 0, 0),
                                   collideradius(-1, -1, -1),
-                                  rejectradius(-1) {}
-
-        virtual ~model()
-        {
-            delete[] name;
-            name = nullptr;
-            if(bih)
-            {
-                delete bih;
-                bih = nullptr;
-            }
-        }
-        virtual void calcbb(vec &center, vec &radius) = 0;
-        virtual void calctransform(matrix4x3 &m) = 0;
-        virtual int intersect(int anim, int basetime, int basetime2, const vec &pos, float yaw, float pitch, float roll, dynent *d, modelattach *a, float size, const vec &o, const vec &ray, float &dist, int mode) = 0;
-        virtual void render(int anim, int basetime, int basetime2, const vec &o, float yaw, float pitch, float roll, dynent *d, modelattach *a = nullptr, float size = 1, const vec4<float> &color = vec4<float>(1, 1, 1, 1)) = 0;
-        virtual bool load() = 0;
-        virtual int type() const = 0;
-        virtual BIH *setBIH() { return nullptr; }
-        virtual bool skeletal() const { return false; }
-        virtual bool animated() const { return false; }
-        virtual bool pitched() const { return true; }
-        virtual bool alphatested() const { return false; }
-
-        virtual void setshader(Shader *) {}
-        virtual void setspec(float) {}
-        virtual void setgloss(int) {}
-        virtual void setglow(float, float, float) {}
-        virtual void setalphatest(float) {}
-        virtual void setfullbright(float) {}
-        virtual void setcullface(int) {}
-        virtual void setcolor(const vec &) {}
-
-        virtual void genshadowmesh(std::vector<triangle> &, const matrix4x3 &) {}
-        virtual void preloadBIH() { if(!bih) setBIH(); }
-        virtual void preloadshaders() {}
-        virtual void preloadmeshes() {}
-        virtual void cleanup() {}
-
-        virtual void startrender() {}
-        virtual void endrender() {}
-
-        void boundbox(vec &center, vec &radius)
-        {
-            if(bbradius.x < 0)
-            {
-                calcbb(bbcenter, bbradius);
-                bbradius.add(bbextend);
-            }
-            center = bbcenter;
-            radius = bbradius;
-        }
-
-        float collisionbox(vec &center, vec &radius)
-        {
-            if(collideradius.x < 0)
-            {
-                boundbox(collidecenter, collideradius);
-                if(collidexyradius)
-                {
-                    collidecenter.x = collidecenter.y = 0;
-                    collideradius.x = collideradius.y = collidexyradius;
-                }
-                if(collideheight)
-                {
-                    collidecenter.z = collideradius.z = collideheight/2;
-                }
-                rejectradius = collideradius.magnitude();
-            }
-            center = collidecenter;
-            radius = collideradius;
-            return rejectradius;
-        }
-
-        float boundsphere(vec &center)
-        {
-            vec radius;
-            boundbox(center, radius);
-            return radius.magnitude();
-        }
-
-        float above()
-        {
-            vec center, radius;
-            boundbox(center, radius);
-            return center.z+radius.z;
-        }
-    private:
-        vec bbcenter, bbradius, collidecenter, collideradius;
-        float rejectradius;
+                                  rejectradius(-1)
+                                  {}
 };
 
 #endif

@@ -2,14 +2,21 @@
 #define RENDERGL_H_
 
 extern int xtraverts, xtravertsva;
-extern int renderw, renderh;
-extern vec worldpos, camdir, camright, camup;
+extern int renderw();
+extern int renderh();
+extern vec worldpos;
 extern bool hasFBMSBS, hasTQ, hasDBT, hasES3, hasCI;
-extern int glversion, glslversion, glcompat;
+extern int glversion, glslversion;
 extern int mesa_swap_bug;
-extern int maxdrawbufs, maxdualdrawbufs;
-extern vec minimapcenter, minimapradius, minimapscale;
+extern int maxdualdrawbufs;
 extern physent *camera1;                // special ent that acts as camera, same object as player1 in FPS mode
+
+extern int hudw();
+extern int hudh();
+
+extern vec camdir();
+extern vec camright();
+extern vec camup();
 
 enum
 {
@@ -18,21 +25,15 @@ enum
     Draw_TexModelPreview,
 };
 
-extern int fov;
-extern float curfov, fovy, aspect, forceaspect;
+extern float forceaspect;
 extern float nearplane;
 extern int farplane;
-extern float ldrscale, ldrscaleb;
 extern int drawtex;
-extern const matrix4 viewmatrix, invviewmatrix;
+extern const matrix4 viewmatrix;
 
 inline const matrix4 viewmatrix(vec(-1, 0, 0), vec(0, 0, 1), vec(0, -1, 0));
-inline const matrix4 invviewmatrix(vec(-1, 0, 0), vec(0, 0, -1), vec(0, 1, 0));
 
-extern matrix4 cammatrix, projmatrix, camprojmatrix, invcammatrix, invcamprojmatrix, invprojmatrix;
-extern int fog;
-extern bvec fogcolor;
-extern vec curfogcolor;
+extern matrix4 cammatrix, projmatrix, camprojmatrix;
 extern int wireframe;
 extern int usetexgather;
 
@@ -52,11 +53,9 @@ inline void glerror()
     }
 }
 extern void mousemove(int dx, int dy);
-extern void gl_checkextensions();
 extern void gl_init();
 extern void gl_resize();
 extern void gl_setupframe(bool force = false);
-extern void gl_drawframe();
 extern void cleanupgl();
 extern void enablepolygonoffset(GLenum type);
 extern void disablepolygonoffset(GLenum type);
@@ -81,14 +80,25 @@ extern void resethudmatrix();
 extern void pushhudmatrix();
 extern void flushhudmatrix(bool flushparams = true);
 extern void pophudmatrix(bool flush = true, bool flushparams = true);
-extern void pushhudscale(float sx, float sy = 0);
+extern void pushhudscale(float scale);
 extern void pushhudtranslate(float tx, float ty, float sx = 0, float sy = 0);
 
-namespace modelpreview
+class ModelPreview
 {
-    extern void start(int x, int y, int w, int h, bool background = true, bool scissor = false);
-    extern void end();
-}
+    public:
+        void start(int x, int y, int w, int h, bool background, bool scissor);
+        void end();
+    private:
+        physent *oldcamera;
+        physent camera;
+
+        float oldaspect, oldfovy, oldfov, oldldrscale;
+        int oldfarplane, oldvieww, oldviewh;
+        matrix4 oldprojmatrix;
+
+        int x, y, w, h;
+        bool background, scissor;
+};
 
 extern void masktiles(uint *tiles, float sx1, float sy1, float sx2, float sy2);
 #endif

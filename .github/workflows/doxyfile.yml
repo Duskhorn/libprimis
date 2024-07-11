@@ -1,4 +1,4 @@
-name: Doxyfile CD
+name: GH Pages CD
 
 # Controls when the workflow will run.
 on:
@@ -9,6 +9,18 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   # This workflow contains a single job called "run-doxygen"
@@ -17,20 +29,20 @@ jobs:
     runs-on: ubuntu-latest
 
     # Steps represent a sequence of tasks that will be executed as part of the job
-    steps:     
-      
+    steps:
+
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           # Get the libprimis-header submodules.
           submodules: true
-      
+
       # Show the current working directory. Nice for debugging.
       - run: pwd
-      
+
       # Show what files are in the repo. Nice for debugging.
       - run: ls --recursive
-      
+
       - name: Doxygen Action
       # You may pin to the exact commit or the version.
       # uses: mattnotmitt/doxygen-action@9039b4cfaf5097b76489c53c0cdc8cba59091b57
@@ -48,14 +60,63 @@ jobs:
           enable-latex: false
           # Extra alpine packages for the build environment.
           # additional-packages: # optional
-      
+
       # Show what files were created. Nice for debugging.
       - run: ls --recursive
-      
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v3
+
+      # Now build the test suite, for gcov files
+      - name: Update package list
+        run: sudo apt-get update
+
+      - name: Install dependencies
+        run: sudo apt-get install libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev libglew-dev lcov
+
+      - name: Build
+        run: make CPP_20=1 -Csrc -j4 COVERAGE_BUILD=1
+
+      - name: Move library to ld path
+        run: sudo cp src/libprimis.so /usr/lib/libprimis.so
+
+      - name: Build test code
+        run: cd test && make
+
+      - name: Run tests
+        run: cd test && ./libprimis_testsuite
+
+      - name: Build lcov tracefile
+        run: lcov -c -d . -o output && lcov -r output "/usr*" -o output && lcov -r output "*/test/*" -o output
+
+      - name: Build lcov HTML
+        run: genhtml -o lcov -t "Libprimis Test Coverage" --num-spaces 4 output
+
+      - name: Move lcov HTML to docs dir
+        run: sudo cp -r lcov docs/lcov
+
+        #Generates float value from lcov summary for tests, then generates its int representation;
+        #macro substitutes it into SVG template to generate badge
+        #We can just host this object along with the website, then reference it to have a dynamic frontpage badge,
+        #instead of using an external service
+      - name: Generate coverage badge
+        run: pct=$(lcov --summary output | grep "lines" | cut -d "%" -f1 | cut -d ":" -f2 | cut -d " " -f2);
+             ipct=$(echo $pct | cut -d "." -f1);
+             gcc -xc -E -P test/coverage.svg -DVAL=$pct -DIVAL=$ipct > covout.svg
+
+      - name: Move coverage badge to docs
+        run: sudo cp covout.svg docs/lcov/coverage.svg
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          # Provide a GitHub token to authenticate pushing files.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Push documentation files in docs folder to gh-pages repo.
-          publish_dir: ./docs
+          # Upload _site/ directory
+          path: 'docs'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Upload man pages
+        uses: actions/upload-artifact@v4
+        with:
+          name: libprimis-doc
+          path: ./doc/man/man3/

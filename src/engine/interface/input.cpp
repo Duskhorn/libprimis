@@ -159,7 +159,7 @@ bool interceptkey(int sym)
     lastintercept = sym;
     if(sym != SDLK_UNKNOWN)
     {
-        for(uint i = len; i < events.size(); i++)
+        for(size_t i = len; i < events.size(); i++)
         {
             if(events[i].type == SDL_KEYDOWN && events[i].key.keysym.sym == sym)
             {
@@ -202,7 +202,7 @@ static void resetmousemotion()
  */
 static void checkmousemotion(int &dx, int &dy)
 {
-    for(uint i = 0; i < events.size(); i++)
+    for(size_t i = 0; i < events.size(); i++)
     {
         SDL_Event &event = events[i];
         if(event.type != SDL_MOUSEMOTION)
@@ -230,9 +230,21 @@ static void checkmousemotion(int &dx, int &dy)
     }
 }
 
+
 //handle different input types
-void checkinput()
+// map: which keymap to map the pressed key to
+void checkinput(int map)
 {
+    constexpr uint minthreshhold = 5000; // minimum value to register inputs
+    constexpr uint maxthreshhold = 27000; // maximum value to register inputs to triggers
+    constexpr int strafethreshhold = 16384; //value when to assign movement in strafe pad, signed to allow unary negation
+    constexpr uint inverseindex = 16;
+
+    constexpr uint mousemovescale = 25000; //how much to divide mouse movement by from joystick input
+    //carry over joystick states
+    static vec2 lpad;
+    static vec2 rpad;
+    static vec2 triggers; //x = left, y = right
     SDL_Event event;
     bool mousemoved = false;
     while(events.size() || pollevent(event))
@@ -253,12 +265,10 @@ void checkinput()
             {
                 if(textinputmask && static_cast<int>(event.text.timestamp-textinputtime) >= textinputfilter)
                 {
-                    uchar buf[SDL_TEXTINPUTEVENT_TEXT_SIZE+1];
-                    size_t len = decodeutf8(buf, sizeof(buf)-1, reinterpret_cast<const uchar *>(event.text.text), std::strlen(event.text.text));
+                    size_t len = std::strlen(event.text.text);
                     if(len > 0)
                     {
-                        buf[len] = '\0';
-                        processtextinput(reinterpret_cast<const char *>(buf), len);
+                        processtextinput(reinterpret_cast<const char *>(event.text.text), len);
                     }
                 }
                 break;
@@ -268,7 +278,7 @@ void checkinput()
             {
                 if(keyrepeatmask || !event.key.repeat)
                 {
-                    processkey(event.key.keysym.sym, event.key.state==SDL_PRESSED);
+                    processkey(event.key.keysym.sym, event.key.state==SDL_PRESSED, map);
                 }
                 break;
             }
@@ -353,27 +363,27 @@ void checkinput()
                 {
                     case SDL_BUTTON_LEFT:
                     {
-                        processkey(Key_Left, event.button.state==SDL_PRESSED);
+                        processkey(Key_Left, event.button.state==SDL_PRESSED, map);
                         break;
                     }
                     case SDL_BUTTON_MIDDLE:
                     {
-                        processkey(Key_Middle, event.button.state==SDL_PRESSED);
+                        processkey(Key_Middle, event.button.state==SDL_PRESSED, map);
                         break;
                     }
                     case SDL_BUTTON_RIGHT:
                     {
-                        processkey(Key_Right, event.button.state==SDL_PRESSED);
+                        processkey(Key_Right, event.button.state==SDL_PRESSED, map);
                         break;
                     }
                     case SDL_BUTTON_X1:
                     {
-                        processkey(Key_X1, event.button.state==SDL_PRESSED);
+                        processkey(Key_X1, event.button.state==SDL_PRESSED, map);
                         break;
                     }
                     case SDL_BUTTON_X2:
                     {
-                        processkey(Key_X2, event.button.state==SDL_PRESSED);
+                        processkey(Key_X2, event.button.state==SDL_PRESSED, map);
                         break;
                     }
                 }
@@ -384,18 +394,104 @@ void checkinput()
                 //up
                 if(event.wheel.y > 0)
                 {
-                    processkey(Key_ScrollUp, true);
-                    processkey(Key_ScrollUp, false);
+                    processkey(Key_ScrollUp, true, map);
+                    processkey(Key_ScrollUp, false, map);
                 }
                 //down
                 else if(event.wheel.y < 0)
                 {
-                    processkey(Key_ScrollDown, true);
-                    processkey(Key_ScrollDown, false);
+                    processkey(Key_ScrollDown, true, map);
+                    processkey(Key_ScrollDown, false, map);
+                }
+                break;
+            }
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_CONTROLLERBUTTONUP:
+            {
+                processkey(event.cbutton.button + (1<<29), event.cbutton.state == SDL_PRESSED, map); //1<<30 is used for non-char keybinds, 1<<29 is an unused part of the namespace
+                break;
+            }
+            case SDL_CONTROLLERAXISMOTION:
+            {
+                uint axis = event.caxis.axis;
+                uint value = event.caxis.value;
+                switch(axis)
+                {
+                    case 0: //left x axis
+                        //these processkeys will push back 1<<28 to keep out of the way of other binds
+                        if(lpad.x >= strafethreshhold)
+                        {
+                            processkey(axis + (1<<28), true, map); //strafe in +x direction
+                        }
+                        else if(lpad.x <= -strafethreshhold)
+                        {
+                            processkey(axis + (1<<28) + inverseindex, true, map); //-x dir
+                        }
+                        else //no input
+                        {
+                            processkey(axis + (1<<28), false, map);
+                            processkey(axis + (1<<28) + inverseindex, false, map);
+                        }
+                        lpad.x = value;
+                        break;
+                    case 1: //left y axis
+                        //these processkeys will push back 1<<28 to keep out of the way of other binds
+                        if(lpad.y >= strafethreshhold)
+                        {
+                            processkey(axis + (1<<28), true, map);
+                        }
+                        else if(lpad.y <= -strafethreshhold)
+                        {
+                            processkey(axis + (1<<28) + inverseindex, true, map);
+                        }
+                        else
+                        {
+                            processkey(axis + (1<<28), false, map);
+                            processkey(axis + (1<<28) + inverseindex, false, map);
+                        }
+                        lpad.y = value;
+                        break;
+                    case 2: //right x axis
+                        rpad.x = value;
+                        break;
+                    case 3: //right y axis
+                        rpad.y = value;
+                        break;
+                    case 4: //left trigger
+                        //these processkeys will push back 1<<28 to keep out of the way of other binds
+                        if(triggers.x >= minthreshhold && value < minthreshhold)
+                        {
+                            processkey(axis + (1<<28), false, map); //left trigger has been unpressed
+                        }
+                        else if(triggers.x <= maxthreshhold && value > maxthreshhold)
+                        {
+                            processkey(axis + (1<<28), true, map); //left trigger has been pressed
+                        }
+                        triggers.x = value;
+                        break;
+                    case 5: //right trigger
+                        if(triggers.y >= minthreshhold && value < minthreshhold)
+                        {
+                            processkey(axis + (1<<28), false, map); //right trigger has been unpressed
+                        }
+                        else if(triggers.y <= maxthreshhold && value > maxthreshhold)
+                        {
+                            processkey(axis + (1<<28), true, map); //right trigger has been pressed
+                        }
+                        triggers.y = value;
                 }
                 break;
             }
         }
+    }
+    { //scoping brakets
+        static int oldmillis;
+        int delta = lastmillis-oldmillis;
+        if(std::abs(rpad.x) > minthreshhold || std::abs(rpad.y) > minthreshhold)
+        {
+            mousemove(delta*rpad.x/mousemovescale, delta*rpad.y/mousemovescale);
+        }
+        oldmillis = lastmillis;
     }
     if(mousemoved)
     {

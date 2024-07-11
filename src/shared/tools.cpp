@@ -32,10 +32,55 @@ void putint(ucharbuf &p, int n)
     putint_(p, n);
 }
 
-void putint(vector<uchar> &p, int n)
+//Stores the passed integer into a uchar array, by splitting it into four bytes.
+void putint(std::vector<uchar> &p, int n)
 {
-    putint_(p, n);
+    p.push_back((n >> 24) & 0xFF);
+    p.push_back((n >> 16) & 0xFF);
+    p.push_back((n >> 8 ) & 0xFF);
+    p.push_back(n & 0xFF);
 }
+
+//Removes the last four values from the uchar array, returning its int representation.
+int getint(std::vector<uchar> &p)
+{
+    int a = 0;
+    a += static_cast<int>(p.back());
+    p.pop_back();
+    a += static_cast<int>(p.back()) << 8;
+    p.pop_back();
+    a += static_cast<int>(p.back()) << 16;
+    p.pop_back();
+    a += static_cast<int>(p.back()) << 24;
+    p.pop_back();
+    return a;
+}
+
+//Stores the passed float into a uchar array, by splitting it into four bytes.
+void putfloat(std::vector<uchar> &p, float n)
+{
+    uchar arr[sizeof(float)];
+    std::memcpy(arr, &n, sizeof(float));
+    for(unsigned long i = 0; i < sizeof(float); ++i)
+    {
+        p.push_back(arr[sizeof(float)-i-1]);
+    }
+}
+
+//Removes the last four values from the uchar array, returning its float representation.
+float getfloat(std::vector<uchar> &p)
+{
+    uchar arr[sizeof(float)];
+    for(unsigned long i = 0; i < sizeof(float); ++i)
+    {
+        arr[i] = p.back();
+        p.pop_back();
+    }
+    float n = 0.f;
+    std::memcpy(&n, arr, sizeof(float));
+    return n;
+}
+
 
 int getint(ucharbuf &p)
 {
@@ -63,11 +108,6 @@ int getint(ucharbuf &p)
 // much smaller encoding for unsigned integers up to 28 bits, but can handle signed
 
 void putuint(ucharbuf &p, int n)
-{
-    putuint_(p, n);
-}
-
-void putuint(vector<uchar> &p, int n)
 {
     putuint_(p, n);
 }
@@ -100,11 +140,6 @@ void putfloat(ucharbuf &p, float f)
     putfloat_(p, f);
 }
 
-void putfloat(vector<uchar> &p, float f)
-{
-    putfloat_(p, f);
-}
-
 float getfloat(ucharbuf &p)
 {
     float f;
@@ -117,7 +152,7 @@ void sendstring(const char *t, ucharbuf &p)
 {
     sendstring_(t, p);
 }
-void sendstring(const char *t, vector<uchar> &p)
+void sendstring(const char *t, std::vector<uchar> &p)
 {
     sendstring_(t, p);
 }

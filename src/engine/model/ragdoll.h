@@ -16,6 +16,17 @@ class ragdollskel
         {
             int vert[3];
 
+            /**
+             * @brief Determines whether two tris share any vertex indices.
+             *
+             * Returns true if the the passed triangle has any of the same vertex indices,
+             * regardless of order (e.g. if this.vert[0] and t.vert[2] are the same, returns true)
+             *
+             * @param t the tri to compare to
+             *
+             * @return true if any indices from this are the same as any from t
+             * @return false if no vertex indices match
+             */
             bool shareverts(const tri &t) const;
         };
         std::vector<tri> tris;
@@ -47,14 +58,14 @@ class ragdollskel
             float maxangle, maxtrace;
             matrix3 middle;
         };
-        vector<rotlimit> rotlimits;
+        std::vector<rotlimit> rotlimits;
 
         struct rotfriction
         {
             int tri[2];
             matrix3 middle;
         };
-        vector<rotfriction> rotfrictions;
+        std::vector<rotfriction> rotfrictions;
 
         struct distlimit
         {
@@ -80,8 +91,14 @@ class ragdolldata
         int millis, collidemillis, lastmove;
         float radius;
         vec offset, center;
-        matrix3 *tris;
+
+        //shadows the elements in skel->tris, should not be resized after construction
+        std::vector<matrix3> tris;
+
+        //shadows the elements in skel->animjoints
         matrix4x3 *animjoints;
+
+        //shadows the elements in skel->reljoints
         dualquat *reljoints;
 
         struct vert
@@ -92,43 +109,15 @@ class ragdolldata
             vert() : oldpos(0, 0, 0), pos(0, 0, 0), newpos(0, 0, 0), undo(0, 0, 0), weight(0), collided(false), stuck(true) {}
         };
 
-        vert *verts;
+        //shadows the elements in skel->verts, should not be resized after construction
+        std::vector<vert> verts;
 
-        ragdolldata(ragdollskel *skel, float scale = 1)
-            : skel(skel),
-              millis(lastmillis),
-              collidemillis(0),
-              lastmove(lastmillis),
-              radius(0),
-              tris(new matrix3[skel->tris.size()]),
-              animjoints(!skel->animjoints || skel->joints.empty() ? nullptr : new matrix4x3[skel->joints.size()]),
-              reljoints(skel->reljoints.empty() ? nullptr : new dualquat[skel->reljoints.size()]),
-              verts(new vert[skel->verts.size()]),
-              collisions(0),
-              floating(0),
-              unsticks(INT_MAX),
-              timestep(0),
-              scale(scale)
-        {
-        }
-
-        ~ragdolldata()
-        {
-            delete[] verts;
-            delete[] tris;
-            if(animjoints)
-            {
-                delete[] animjoints;
-            }
-            if(reljoints)
-            {
-                delete[] reljoints;
-            }
-        }
+        ragdolldata(ragdollskel *skel, float scale = 1);
+        ~ragdolldata();
 
         void move(dynent *pl, float ts);
         void calcanimjoint(int i, const matrix4x3 &anim);
-        void init(dynent *d);
+        void init(const dynent *d);
 
     private:
         int collisions, floating, unsticks;
@@ -138,32 +127,15 @@ class ragdolldata
         void calcboundsphere();
         void constrain();
         void constraindist();
-        void applyrotlimit(ragdollskel::tri &t1, ragdollskel::tri &t2, float angle, const vec &axis);
+        void applyrotlimit(const ragdollskel::tri &t1, const ragdollskel::tri &t2, float angle, const vec &axis);
         void constrainrot();
         void calcrotfriction();
         void applyrotfriction(float ts);
         void tryunstick(float speed);
 
-        static inline bool collidevert(const vec &pos, const vec &dir, float radius)
-        {
-            static struct vertent : physent
-            {
-                vertent()
-                {
-                    type = PhysEnt_Bounce;
-                    radius = xradius = yradius = eyeheight = aboveeye = 1;
-                }
-            } v;
-            v.o = pos;
-            if(v.radius != radius)
-            {
-                v.radius = v.xradius = v.yradius = v.eyeheight = v.aboveeye = radius;
-            }
-            return collide(&v, dir, 0, false);
-        }
+        bool collidevert(const vec &pos, const vec &dir, float radius);
 };
 
 extern void cleanragdoll(dynent *d);
-extern void moveragdoll(dynent *d);
 
 #endif

@@ -21,6 +21,8 @@
 #include "renderlights.h"
 #include "rendersky.h"
 #include "renderva.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/console.h"
@@ -31,18 +33,36 @@
 #include "world/octaworld.h"
 #include "world/raycube.h"
 
-VARNR(skytexture, useskytexture, 0, 0, 1);       //toggles rendering sky texture instead of nothing on skytex'd geometry
 VARFR(skyshadow, 0, 0, 1, clearshadowcache());   //toggles rsm features in renderva.cpp
 
-int explicitsky = 0;
+bool explicitsky = false;
 
 // internally relevant functionality
 namespace
 {
-    Texture *sky[6] = { 0, 0, 0, 0, 0, 0 };
+    VARNR(skytexture, useskytexture, 0, 0, 1);       //toggles rendering sky texture instead of nothing on skytex'd geometry
 
-    void loadsky(const char *basename, Texture *texs[6])
+    std::array<const Texture *, 6> sky = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+
+    void loadsky(const char *basename, std::array<const Texture *, 6> &texs)
     {
+
+        struct cubemapside
+        {
+            GLenum target;
+            const char *name;
+            bool flipx, flipy, swapxy;
+        };
+        static const cubemapside cubemapsides[6] =
+        {
+            { GL_TEXTURE_CUBE_MAP_NEGATIVE_X, "lf", false, true,  true  },
+            { GL_TEXTURE_CUBE_MAP_POSITIVE_X, "rt", true,  false, true  },
+            { GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, "bk", false, false, false },
+            { GL_TEXTURE_CUBE_MAP_POSITIVE_Y, "ft", true,  true,  false },
+            { GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, "dn", true,  false, true  },
+            { GL_TEXTURE_CUBE_MAP_POSITIVE_Z, "up", true,  false, true  },
+        };
+
         const char *wildcard = std::strchr(basename, '*');
         for(int i = 0; i < 6; ++i) //six sides for a cubemap
         {
@@ -129,7 +149,7 @@ namespace
         }
     });
     FVARR(cloudoffsetx, 0, 0, 1); //offset of cloud texture: 1 is equal to 1 tex-width x
-    FVARR(cloudoffsety, 0, 0, 1); //offset of cloud texture: 1 is ewual to 1 tex width y
+    FVARR(cloudoffsety, 0, 0, 1); //offset of cloud texture: 1 is equal to 1 tex-width y
     FVARR(cloudscrollx, -16, 0, 16);
     FVARR(cloudscrolly, -16, 0, 16);
     FVARR(cloudscale, 0.001, 1, 64);
@@ -145,7 +165,7 @@ namespace
                         float s1, float t1, int x1, int y1, int z1,
                         float s2, float t2, int x2, int y2, int z2,
                         float s3, float t3, int x3, int y3, int z3,
-                        Texture *tex)
+                        const Texture *tex)
     {
         glBindTexture(GL_TEXTURE_2D, (tex ? tex : notexture)->id);
         gle::begin(GL_TRIANGLE_STRIP);
@@ -156,7 +176,7 @@ namespace
         xtraverts += gle::end();
     }
 
-    void drawenvbox(Texture **sky = nullptr, float z1clip = 0.0f, float z2clip = 1.0f, int faces = 0x3F)
+    void drawenvbox(const std::array<const Texture *, 6> &sky, float z1clip = 0.0f, float z2clip = 1.0f, int faces = 0x3F)
     {
         if(z1clip >= z2clip)
         {
@@ -216,7 +236,7 @@ namespace
         }
     }
 
-    void drawenvoverlay(Texture *overlay = nullptr, float tx = 0, float ty = 0)
+    void drawenvoverlay(const Texture *overlay = nullptr, float tx = 0, float ty = 0)
     {
         int w = farplane/2;
         float z   = w*cloudheight,
@@ -275,9 +295,9 @@ namespace
     {
         SETSHADER(atmosphere);
 
-        matrix4 sunmatrix = invcammatrix;
+        matrix4 sunmatrix = cammatrix.inverse();
         sunmatrix.settranslation(0, 0, 0);
-        sunmatrix.mul(invprojmatrix);
+        sunmatrix.mul(projmatrix.inverse());
         LOCALPARAM(sunmatrix, sunmatrix);
 
         LOCALPARAM(sunlight, (!atmosunlight.iszero() ? atmosunlight.tocolor().mul(atmosunlightscale) : sunlight.tocolor().mul(sunlightscale)).mul(atmobright*ldrscale));
@@ -383,7 +403,7 @@ void drawskybox(bool clear)
         matrix4 skymatrix = cammatrix,
                 skyprojmatrix;
         skymatrix.settranslation(0, 0, 0);
-        skymatrix.rotate_around_z((skyboxspin*lastmillis/1000.0f+skyboxyaw)*RAD);
+        skymatrix.rotate_around_z((skyboxspin*lastmillis/1000.0f+skyboxyaw)/RAD);
         skyprojmatrix.mul(projmatrix, skymatrix);
         LOCALPARAM(skymatrix, skyprojmatrix);
 
@@ -416,7 +436,7 @@ void drawskybox(bool clear)
         matrix4 skymatrix = cammatrix,
                 skyprojmatrix;
         skymatrix.settranslation(0, 0, 0);
-        skymatrix.rotate_around_z((cloudspin*lastmillis/1000.0f+cloudyaw)*RAD);
+        skymatrix.rotate_around_z((cloudspin*lastmillis/1000.0f+cloudyaw)/RAD);
         skyprojmatrix.mul(projmatrix, skymatrix);
         LOCALPARAM(skymatrix, skyprojmatrix);
 

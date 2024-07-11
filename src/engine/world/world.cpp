@@ -4,13 +4,15 @@
 #include "../../shared/geomexts.h"
 #include "../../shared/glexts.h"
 
+#include <memory>
+#include <optional>
+
 #include "bih.h"
 #include "entities.h"
 #include "light.h"
 #include "octaedit.h"
 #include "octaworld.h"
 #include "raycube.h"
-#include "worldio.h"
 #include "world.h"
 
 #include "interface/console.h"
@@ -23,23 +25,20 @@
 #include "render/renderlights.h"
 #include "render/rendermodel.h"
 #include "render/renderparticles.h"
+#include "render/shaderparam.h"
 #include "render/stain.h"
 #include "render/texture.h"
 
-VARR(mapversion, 1, currentmapversion, 0);
-VARNR(mapscale, worldscale, 1, 0, 0);
-VARNR(mapsize, worldsize, 1, 0, 0);
 SVARR(maptitle, "Untitled Map by Unknown");
-VARNR(emptymap, _emptymap, 1, 0, 0);
 
-vector<int> outsideents;
-vector<int> entgroup;
+std::vector<int> outsideents;
+std::vector<int> entgroup;
 
 namespace entities
 {
-    vector<extentity *> ents;
+    std::vector<extentity *> ents;
 
-    vector<extentity *> &getents()
+    std::vector<extentity *> &getents()
     {
         return ents;
     }
@@ -61,9 +60,10 @@ namespace entities
 
     void clearents()
     {
-        while(ents.length())
+        while(ents.size())
         {
-            deleteentity(ents.pop());
+            deleteentity(ents.back());
+            ents.pop_back();
         }
     }
 
@@ -75,11 +75,11 @@ VAR(octaentsize, 0, 64, 1024);
 
 void entcancel()
 {
-    entgroup.shrink(0);
+    entgroup.clear();
 }
 
 //need a getter fxn because decalslot obj not exposed to the game
-float getdecalslotdepth(DecalSlot &s)
+float getdecalslotdepth(const DecalSlot &s)
 {
     return s.depth;
 }
@@ -112,10 +112,10 @@ void attachentity(extentity &e)
     }
     detachentity(e);
 
-    vector<extentity *> &ents = entities::getents();
+    std::vector<extentity *> &ents = entities::getents();
     int closest = -1;
     float closedist = 1e10f; //some arbitrary high value
-    for(int i = 0; i < ents.length(); i++)
+    for(uint i = 0; i < ents.size(); i++)
     {
         extentity *a = ents[i];
         if(a->attached)
@@ -153,16 +153,16 @@ void attachentity(extentity &e)
     ents[closest]->attached = &e;
 }
 
+//used in iengine
 void attachentities()
 {
-    vector<extentity *> &ents = entities::getents();
-    for(int i = 0; i < ents.length(); i++)
+    for(extentity *& i : entities::getents())
     {
-        attachentity(*ents[i]);
+        attachentity(*i);
     }
 }
 
-enum
+enum ModOctaEnt
 {
     ModOctaEnt_Add      = 1<<0,
     ModOctaEnt_UpdateBB = 1<<1,
@@ -200,6 +200,7 @@ static void transformbb(const entity &e, vec &center, vec &radius)
     rotatebb(center, radius, e.attr2, e.attr3, e.attr4);
 }
 
+//used in iengine
 void mmboundbox(const entity &e, model *m, vec &center, vec &radius)
 {
     m->boundbox(center, radius);
@@ -212,7 +213,7 @@ static void mmcollisionbox(const entity &e, model *m, vec &center, vec &radius)
     transformbb(e, center, radius);
 }
 
-static void decalboundbox(const entity &e, DecalSlot &s, vec &center, vec &radius)
+static void decalboundbox(const entity &e, const DecalSlot &s, vec &center, vec &radius)
 {
     float size = std::max(static_cast<float>(e.attr5), 1.0f);
     center = vec(0, s.depth * size/2, 0);
@@ -220,7 +221,50 @@ static void decalboundbox(const entity &e, DecalSlot &s, vec &center, vec &radiu
     rotatebb(center, radius, e.attr2, e.attr3, e.attr4);
 }
 
-void freeoctaentities(cube &c);
+static bool modifyoctaent(int flags, int id)
+{
+    std::vector<extentity *> &ents = entities::getents();
+    return (static_cast<int>(ents.size()) > id) && ::rootworld.modifyoctaent(flags, id, *ents[id]);
+}
+
+static void removeentity(int id)
+{
+    modifyoctaent(ModOctaEnt_UpdateBB, id);
+}
+
+void freeoctaentities(cube &c)
+{
+    if(!c.ext)
+    {
+        return;
+    }
+    if(entities::getents().size())
+    {
+        while(c.ext->ents && !c.ext->ents->mapmodels.empty())
+        {
+            int id = c.ext->ents->mapmodels.back();
+            c.ext->ents->mapmodels.pop_back();
+            removeentity(id);
+        }
+        while(c.ext->ents && !c.ext->ents->decals.empty())
+        {
+            int id = c.ext->ents->decals.back();
+            c.ext->ents->decals.pop_back();
+            removeentity(id);
+        }
+        while(c.ext->ents && !c.ext->ents->other.empty())
+        {
+            int id = c.ext->ents->other.back();
+            c.ext->ents->other.pop_back();
+            removeentity(id);
+        }
+    }
+    if(c.ext->ents)
+    {
+        delete c.ext->ents;
+        c.ext->ents = nullptr;
+    }
+}
 
 static bool getentboundingbox(const extentity &e, ivec &o, ivec &r)
 {
@@ -232,7 +276,7 @@ static bool getentboundingbox(const extentity &e, ivec &o, ivec &r)
         }
         case EngineEnt_Decal:
         {
-            DecalSlot &s = lookupdecalslot(e.attr1, false);
+            const DecalSlot &s = lookupdecalslot(e.attr1, false);
             vec center, radius;
             decalboundbox(e, s, center, radius);
             center.add(e.o);
@@ -265,7 +309,7 @@ static bool getentboundingbox(const extentity &e, ivec &o, ivec &r)
     return true;
 }
 
-void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor, int size, const ivec &bo, const ivec &br, int leafsize, vtxarray *lastva = nullptr)
+static void modifyoctaentity(int flags, int id, const extentity &e, std::array<cube, 8> &c, const ivec &cor, int size, const ivec &bo, const ivec &br, int leafsize, vtxarray *lastva = nullptr)
 {
     LOOP_OCTA_BOX(cor, size, bo, br)
     {
@@ -273,7 +317,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
         vtxarray *va = c[i].ext && c[i].ext->va ? c[i].ext->va : lastva;
         if(c[i].children != nullptr && size > leafsize)
         {
-            modifyoctaentity(flags, id, e, c[i].children, o, size>>1, bo, br, leafsize, va);
+            modifyoctaentity(flags, id, e, *(c[i].children), o, size>>1, bo, br, leafsize, va);
         }
         else if(flags&ModOctaEnt_Add)
         {
@@ -291,10 +335,10 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                         va->bbmin.x = -1;
                         if(oe.decals.empty())
                         {
-                            va->decals.add(&oe);
+                            va->decals.push_back(&oe);
                         }
                     }
-                    oe.decals.add(id);
+                    oe.decals.push_back(id);
                     oe.bbmin.min(bo).max(oe.o);
                     oe.bbmax.max(br).min(ivec(oe.o).add(oe.size));
                     break;
@@ -308,10 +352,10 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                             va->bbmin.x = -1;
                             if(oe.mapmodels.empty())
                             {
-                                va->mapmodels.add(&oe);
+                                va->mapmodels.push_back(&oe);
                             }
                         }
-                        oe.mapmodels.add(id);
+                        oe.mapmodels.push_back(id);
                         oe.bbmin.min(bo).max(oe.o);
                         oe.bbmax.max(br).min(ivec(oe.o).add(oe.size));
                     }
@@ -320,7 +364,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                 // invisible mapmodels: lights sounds spawns etc.
                 default:
                 {
-                    oe.other.add(id);
+                    oe.other.push_back(id);
                     break;
                 }
             }
@@ -332,18 +376,25 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
             {
                 case EngineEnt_Decal:
                 {
-                    oe.decals.removeobj(id);
+                    if(std::find(oe.decals.begin(), oe.decals.end(), id) != oe.decals.end())
+                    {
+                        oe.decals.erase(std::find(oe.decals.begin(), oe.decals.end(), id));
+                    }
                     if(va)
                     {
                         va->bbmin.x = -1;
                         if(oe.decals.empty())
                         {
-                            va->decals.removeobj(&oe);
+                            auto itr = std::find(va->decals.begin(), va->decals.end(), &oe);
+                            if(itr != va->decals.end())
+                            {
+                                va->decals.erase(itr);
+                            }
                         }
                     }
                     oe.bbmin = oe.bbmax = oe.o;
                     oe.bbmin.add(oe.size);
-                    for(int j = 0; j < oe.decals.length(); j++)
+                    for(uint j = 0; j < oe.decals.size(); j++)
                     {
                         extentity &e = *entities::getents()[oe.decals[j]];
                         ivec eo, er;
@@ -361,20 +412,27 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                 {
                     if(loadmapmodel(e.attr1))
                     {
-                        oe.mapmodels.removeobj(id);
+                        auto itr = std::find(oe.mapmodels.begin(), oe.mapmodels.end(), id);
+                        if(itr != oe.mapmodels.end())
+                        {
+                            oe.mapmodels.erase(itr);
+                        }
                         if(va)
                         {
                             va->bbmin.x = -1;
                             if(oe.mapmodels.empty())
                             {
-                                va->mapmodels.removeobj(&oe);
+                                if(std::find(va->mapmodels.begin(), va->mapmodels.end(), &oe) != va->mapmodels.end())
+                                {
+                                    va->mapmodels.erase(std::find(va->mapmodels.begin(), va->mapmodels.end(), &oe));
+                                }
                             }
                         }
                         oe.bbmin = oe.bbmax = oe.o;
                         oe.bbmin.add(oe.size);
-                        for(int j = 0; j < oe.mapmodels.length(); j++)
+                        for(const int &j : oe.mapmodels)
                         {
-                            extentity &e = *entities::getents()[oe.mapmodels[j]];
+                            extentity &e = *entities::getents()[j];
                             ivec eo, er;
                             if(getentboundingbox(e, eo, er))
                             {
@@ -390,7 +448,10 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                 // invisible mapmodels: light sounds spawns etc.
                 default:
                 {
-                    oe.other.removeobj(id);
+                    if(std::find(oe.other.begin(), oe.other.end(), id) != oe.other.end())
+                    {
+                        oe.other.erase(std::find(oe.other.begin(), oe.other.end(), id));
+                    }
                     break;
                 }
             }
@@ -433,17 +494,17 @@ bool cubeworld::modifyoctaent(int flags, int id, extentity &e)
     }
     if(!insideworld(e.o))
     {
-        int idx = outsideents.find(id);
+        uint idx = std::distance(outsideents.begin(), std::find(outsideents.begin(), outsideents.end(), id));
         if(flags&ModOctaEnt_Add)
         {
-            if(idx < 0)
+            if(idx < outsideents.size())
             {
-                outsideents.add(id);
+                outsideents.push_back(id);
             }
         }
         else if(idx >= 0)
         {
-            outsideents.removeunordered(idx);
+            outsideents.erase(outsideents.begin() + idx);
         }
     }
     else
@@ -459,7 +520,7 @@ bool cubeworld::modifyoctaent(int flags, int id, extentity &e)
         {
             leafsize *= 2;
         }
-        modifyoctaentity(flags, id, e, worldroot, ivec(0, 0, 0), worldsize>>1, o, r, leafsize);
+        modifyoctaentity(flags, id, e, *worldroot, ivec(0, 0, 0), mapsize()>>1, o, r, leafsize);
     }
     e.flags ^= EntFlag_Octa;
     switch(e.type)
@@ -513,20 +574,9 @@ bool cubeworld::modifyoctaent(int flags, int id, extentity &e)
     return true;
 }
 
-static bool modifyoctaent(int flags, int id)
-{
-    vector<extentity *> &ents = entities::getents();
-    return ents.inrange(id) && ::rootworld.modifyoctaent(flags, id, *ents[id]);
-}
-
 void addentityedit(int id)
 {
     modifyoctaent(ModOctaEnt_Add|ModOctaEnt_UpdateBB|ModOctaEnt_Changed, id);
-}
-
-static void removeentity(int id)
-{
-    modifyoctaent(ModOctaEnt_UpdateBB, id);
 }
 
 void removeentityedit(int id)
@@ -534,40 +584,12 @@ void removeentityedit(int id)
     modifyoctaent(ModOctaEnt_UpdateBB|ModOctaEnt_Changed, id);
 }
 
-void freeoctaentities(cube &c)
+void cubeworld::entitiesinoctanodes()
 {
-    if(!c.ext)
+    std::vector<extentity *> &ents = entities::getents();
+    for(uint i = 0; i < ents.size(); i++)
     {
-        return;
-    }
-    if(entities::getents().length())
-    {
-        while(c.ext->ents && !c.ext->ents->mapmodels.empty())
-        {
-            removeentity(c.ext->ents->mapmodels.pop());
-        }
-        while(c.ext->ents && !c.ext->ents->decals.empty())
-        {
-            removeentity(c.ext->ents->decals.pop());
-        }
-        while(c.ext->ents && !c.ext->ents->other.empty())
-        {
-            removeentity(c.ext->ents->other.pop());
-        }
-    }
-    if(c.ext->ents)
-    {
-        delete c.ext->ents;
-        c.ext->ents = nullptr;
-    }
-}
-
-void entitiesinoctanodes()
-{
-    vector<extentity *> &ents = entities::getents();
-    for(int i = 0; i < ents.length(); i++)
-    {
-        ::rootworld.modifyoctaent(ModOctaEnt_Add, i, *ents[i]);
+        modifyoctaent(ModOctaEnt_Add, i, *ents[i]);
     }
 }
 
@@ -615,7 +637,7 @@ void entselectionbox(const entity &e, vec &eo, vec &es)
 
 ////////////////////////////// world size/octa /////////////////////////////////
 
-void splitocta(cube *c, int size)
+static void splitocta(std::array<cube, 8> &c, int size)
 {
     if(size <= 0x1000)
     {
@@ -627,11 +649,11 @@ void splitocta(cube *c, int size)
         {
             c[i].children = newcubes(c[i].isempty() ? faceempty : facesolid);
         }
-        splitocta(c[i].children, size>>1);
+        splitocta(*(c[i].children), size>>1);
     }
 }
 
-void resetmap()
+void cubeworld::resetmap()
 {
     clearoverrides();
     clearlights();
@@ -644,7 +666,7 @@ void resetmap()
     clearmapcrc();
 
     entities::clearents();
-    outsideents.setsize(0);
+    outsideents.clear();
     spotlights = 0;
     volumetriclights = 0;
     nospeclights = 0;
@@ -658,19 +680,18 @@ bool cubeworld::emptymap(int scale, bool force, bool usecfg)    // main empty wo
         return false;
     }
     resetmap();
-    setvar("mapscale", scale<10 ? 10 : (scale>16 ? 16 : scale), true, false);
-    setvar("mapsize", 1<<worldscale, true, false);
+    worldscale = std::clamp(scale, 10, 16);
     setvar("emptymap", 1, true, false);
     texmru.clear();
     freeocta(worldroot);
     worldroot = newcubes(faceempty);
     for(int i = 0; i < 4; ++i)
     {
-        setcubefaces(worldroot[i], facesolid);
+        setcubefaces((*worldroot)[i], facesolid);
     }
-    if(worldsize > 0x1000)
+    if(mapsize() > 0x1000)
     {
-        splitocta(worldroot, worldsize>>1);
+        splitocta(*worldroot, mapsize()>>1);
     }
     clearmainmenu();
     if(usecfg)
@@ -693,28 +714,18 @@ bool cubeworld::emptymap(int scale, bool force, bool usecfg)    // main empty wo
  */
 bool cubeworld::enlargemap(bool force)
 {
-    if(!force && !editmode)
-    {
-        conoutf(Console_Error, "mapenlarge only allowed in edit mode");
-        return false;
-    }
-    if(worldsize >= 1<<16)
-    {
-        return false;
-    }
     worldscale++;
-    worldsize *= 2;
-    cube *c = newcubes(faceempty);
-    c[0].children = worldroot;
+    std::array<cube, 8> *c = newcubes(faceempty);
+    (*c)[0].children = worldroot;
     for(int i = 0; i < 3; ++i)
     {
-        setcubefaces(c[i+1], facesolid);
+        setcubefaces((*c)[i+1], facesolid);
     }
     worldroot = c;
 
-    if(worldsize > 0x1000)
+    if(mapsize() > 0x1000)
     {
-        splitocta(worldroot, worldsize>>1);
+        splitocta(*worldroot, mapsize()>>1);
     }
     allchanged();
     return true;
@@ -729,7 +740,7 @@ bool cubeworld::enlargemap(bool force)
  * returns false if any cube or child cube is not empty (has geometry)
  *
  */
-static bool isallempty(cube &c)
+static bool isallempty(const cube &c)
 {
     if(!c.children)
     {
@@ -737,7 +748,7 @@ static bool isallempty(cube &c)
     }
     for(int i = 0; i < 8; ++i)
     {
-        if(!isallempty(c.children[i]))
+        if(!isallempty((*c.children)[i]))
         {
             return false;
         }
@@ -757,14 +768,14 @@ void cubeworld::shrinkmap()
         multiplayerwarn();
         return;
     }
-    if(worldsize <= 1<<10) //do not allow maps smaller than 2^10 cubits
+    if(mapsize() <= 1<<10) //do not allow maps smaller than 2^10 cubits
     {
         return;
     }
     int octant = -1;
     for(int i = 0; i < 8; ++i)
     {
-        if(!isallempty(worldroot[i]))
+        if(!isallempty((*worldroot)[i]))
         {
             if(octant >= 0)
             {
@@ -777,27 +788,31 @@ void cubeworld::shrinkmap()
     {
         return;
     }
-    if(!worldroot[octant].children)
+    if(!(*worldroot)[octant].children)
     {
-        subdividecube(worldroot[octant], false, false);
+        subdividecube((*worldroot)[octant], false, false);
     }
-    cube *root = worldroot[octant].children; //change worldroot to cube 0
-    worldroot[octant].children = nullptr; //free the old largest cube
+    std::array<cube, 8> *&root = (*worldroot)[octant].children; //change worldroot to cube 0
+    (*worldroot)[octant].children = nullptr; //free the old largest cube
     freeocta(worldroot);
     worldroot = root;
     worldscale--;
-    worldsize /= 2;
-    ivec offset(octant, ivec(0, 0, 0), worldsize);
-    vector<extentity *> &ents = entities::getents();
-    for(int i = 0; i < ents.length(); i++)
+    ivec offset(octant, ivec(0, 0, 0), mapsize());
+    std::vector<extentity *> &ents = entities::getents();
+    for(extentity * const i : ents)
     {
-        ents[i]->o.sub(vec(offset));
+        i->o.sub(vec(offset));
     }
     allchanged();
     conoutf("shrunk map to size %d", worldscale);
 }
 
-int getworldsize()
+int cubeworld::mapsize() const
 {
-    return worldsize;
+    return 1<<worldscale;
+}
+
+int cubeworld::mapscale() const
+{
+    return worldscale;
 }

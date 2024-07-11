@@ -9,7 +9,6 @@
 #include "octaedit.h"
 #include "octaworld.h"
 #include "raycube.h"
-#include "worldio.h"
 #include "world.h"
 
 #include "interface/console.h"
@@ -18,11 +17,12 @@
 
 #include "render/octarender.h"
 #include "render/renderwindow.h"
+#include "render/shaderparam.h"
 #include "render/texture.h"
 
-string clientmap = "";
+static std::string clientmap = "";
 
-void validmapname(char *dst, const char *src, const char *prefix = nullptr, const char *alt = "untitled", size_t maxlen = 100)
+static void validmapname(char *dst, const char *src, const char *prefix = nullptr, const char *alt = "untitled", size_t maxlen = 100)
 {
     if(prefix)
     {
@@ -57,30 +57,25 @@ void validmapname(char *dst, const char *src, const char *prefix = nullptr, cons
     }
 }
 
-void fixmapname(char *name)
+//used in iengine.h
+const char * getclientmap()
 {
-    validmapname(name, name, nullptr, "");
+    return clientmap.c_str();
 }
 
-static void fixent(entity &e, int version)
+void setmapname(const char * newname)
 {
-    if(version <= 0)
-    {
-        if(e.type >= EngineEnt_Decal)
-        {
-            e.type++;
-        }
-    }
+    clientmap = std::string(newname);
 }
 
-static bool loadmapheader(stream *f, const char *ogzname, mapheader &hdr, octaheader &ohdr)
+bool cubeworld::loadmapheader(stream *f, const char *ogzname, mapheader &hdr, octaheader &ohdr) const
 {
     if(f->read(&hdr, 3*sizeof(int)) != 3*sizeof(int))
     {
         conoutf(Console_Error, "map %s has malformatted header", ogzname);
         return false;
     }
-    if(!memcmp(hdr.magic, "TMAP", 4))
+    if(!std::memcmp(hdr.magic, "TMAP", 4))
     {
         if(hdr.version>currentmapversion)
         {
@@ -98,7 +93,7 @@ static bool loadmapheader(stream *f, const char *ogzname, mapheader &hdr, octahe
             return false;
         }
     }
-    else if(!memcmp(hdr.magic, "OCTA", 4))
+    else if(!std::memcmp(hdr.magic, "OCTA", 4))
     {
         if(hdr.version!=octaversion)
         {
@@ -115,7 +110,7 @@ static bool loadmapheader(stream *f, const char *ogzname, mapheader &hdr, octahe
             conoutf(Console_Error, "map %s has malformatted header", ogzname);
             return false;
         }
-        memcpy(hdr.magic, "TMAP", 4);
+        std::memcpy(hdr.magic, "TMAP", 4);
         hdr.version = 0;
         hdr.headersize = sizeof(hdr);
         hdr.worldsize = ohdr.worldsize;
@@ -132,102 +127,9 @@ static bool loadmapheader(stream *f, const char *ogzname, mapheader &hdr, octahe
     return true;
 }
 
-bool loadents(const char *fname, const char *gameident, vector<entity> &ents, uint *crc)
-{
-    string name;
-    validmapname(name, fname);
-    DEF_FORMAT_STRING(ogzname, "media/map/%s.ogz", name);
-    path(ogzname);
-    stream *f = opengzfile(ogzname, "rb");
-    if(!f)
-    {
-        return false;
-    }
-    mapheader hdr;
-    octaheader ohdr;
-    if(!loadmapheader(f, ogzname, hdr, ohdr))
-    {
-        delete f;
-        return false;
-    }
-    for(int i = 0; i < hdr.numvars; ++i)
-    {
-        int type = f->getchar(),
-            ilen = f->get<ushort>();
-        f->seek(ilen, SEEK_CUR);
-        switch(type)
-        {
-            case Id_Var:
-            {
-                f->get<int>();
-                break;
-            }
-            case Id_FloatVar:
-            {
-                f->get<float>();
-                break;
-            }
-            case Id_StringVar:
-            {
-                int slen = f->get<ushort>();
-                f->seek(slen, SEEK_CUR);
-                break;
-            }
-        }
-    }
-    string gametype;
-    bool samegame = true;
-    int len = f->getchar();
-    if(len >= 0)
-    {
-        f->read(gametype, len+1);
-    }
-    gametype[std::max(len, 0)] = '\0';
-    if(std::strcmp(gametype, gameident)) //compare game string from map with game
-    {
-        samegame = false;
-        conoutf(Console_Warn, "WARNING: loading map from %s game, ignoring entities except for lights/mapmodels", gametype);
-    }
-    int eif = f->get<ushort>(),
-        extrasize = f->get<ushort>();
-    f->seek(extrasize, SEEK_CUR);
-
-    ushort nummru = f->get<ushort>();
-    f->seek(nummru*sizeof(ushort), SEEK_CUR);
-
-    for(int i = 0; i < std::min(hdr.numents, maxents); ++i)
-    {
-        entity &e = ents.add();
-        f->read(&e, sizeof(entity));
-        fixent(e, hdr.version);
-        if(eif > 0)
-        {
-            f->seek(eif, SEEK_CUR);
-        }
-        if(samegame)
-        {
-        }
-        else if(e.type>=EngineEnt_GameSpecific)
-        {
-            ents.pop();
-            continue;
-        }
-    }
-
-    if(crc)
-    {
-        f->seek(0, SEEK_END);
-        *crc = f->getcrc();
-    }
-    delete f;
-    return true;
-}
-
-string ogzname, bakname, cfgname, picname;
-
 VARP(savebak, 0, 2, 2);
 
-void setmapfilenames(const char *fname, const char *cname = nullptr)
+void cubeworld::setmapfilenames(const char *fname, const char *cname)
 {
     string name;
     validmapname(name, fname);
@@ -255,7 +157,7 @@ void setmapfilenames(const char *fname, const char *cname = nullptr)
 
 void mapcfgname()
 {
-    const char *mname = clientmap;
+    const char *mname = clientmap.c_str();
     string name;
     validmapname(name, mname);
     DEF_FORMAT_STRING(cfgname, "media/map/%s.cfg", name);
@@ -263,17 +165,15 @@ void mapcfgname()
     result(cfgname);
 }
 
-COMMAND(mapcfgname, "");
-
 void backup(const char *name, const char *backupname)
 {
     string backupfile;
     copystring(backupfile, findfile(backupname, "wb"));
-    remove(backupfile);
-    rename(findfile(name, "wb"), backupfile);
+    std::remove(backupfile);
+    std::rename(findfile(name, "wb"), backupfile);
 }
 
-enum
+enum OctaSave
 {
     OctaSave_Children = 0,
     OctaSave_Empty,
@@ -281,17 +181,9 @@ enum
     OctaSave_Normal
 };
 
-static constexpr uint layerdup (1<<7); //if numverts is larger than this, get additional precision
-
-struct polysurfacecompat
-{
-    uchar lmid[2];
-    uchar verts, numverts;
-};
-
 static int savemapprogress = 0;
 
-void savec(cube *c, const ivec &o, int size, stream *f)
+void cubeworld::savec(const std::array<cube, 8> &c, const ivec &o, int size, stream * const f)
 {
     if((savemapprogress++&0xFFF)==0)
     {
@@ -303,7 +195,7 @@ void savec(cube *c, const ivec &o, int size, stream *f)
         if(c[i].children) //recursively note existence of children & call this fxn again
         {
             f->putchar(OctaSave_Children);
-            savec(c[i].children, co, size>>1, f);
+            savec(*(c[i].children), co, size>>1, f);
         }
         else //once we're done with all cube children within cube *c given
         {
@@ -373,7 +265,8 @@ void savec(cube *c, const ivec &o, int size, stream *f)
                     {
                         surfaceinfo surf = c[i].ext->surfaces[j];
                         vertinfo *verts = c[i].ext->verts() + surf.verts;
-                        int layerverts = surf.numverts&Face_MaxVerts, numverts = surf.totalverts(),
+                        int layerverts = surf.numverts&Face_MaxVerts,
+                            numverts = surf.totalverts(),
                             vertmask   = 0,
                             vertorder  = 0,
                             dim = DIMENSION(j),
@@ -475,10 +368,31 @@ void savec(cube *c, const ivec &o, int size, stream *f)
     }
 }
 
-cube *loadchildren(stream *f, const ivec &co, int size, bool &failed);
+std::array<cube, 8> *loadchildren(stream *f, const ivec &co, int size, bool &failed);
 
+/**
+ * @param Loads a cube, possibly containing its child cubes.
+ *
+ * Sets the contents of the cube passed depending on the leading flag embedded
+ * in the string.
+ *
+ * If OctaSave_Children, begins recursive loading of cubes into the passed cube's `children` field
+ *
+ * If OctaSave_Empty, clears the cube
+ *
+ * If OctaSave_Solid, fills the cube completely
+ *
+ * If OctaSave_Normal, reads and sets the twelve edges of the cube
+ *
+ * If none of these are passed, failed flag is set and nothing is done.
+ *
+ * Once OctaSave_Empty/Solid/Normal has been initiated, loads texture, material,
+ * normal data, and other meta information for the cube c passed
+ */
 void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
 {
+    static constexpr uint layerdup (1<<7); //if numverts is larger than this, get additional precision
+
     int octsav = f->getchar();
     switch(octsav&0x7)
     {
@@ -507,7 +421,7 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
             return;
         }
     }
-    for(int i = 0; i < 6; ++i)
+    for(uint i = 0; i < 6; ++i)
     {
         c.texture[i] = f->get<ushort>();
     }
@@ -525,26 +439,17 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
         surfmask = f->getchar();
         totalverts = std::max(f->getchar(), 0);
         newcubeext(c, totalverts, false);
-        memset(c.ext->surfaces, 0, sizeof(c.ext->surfaces));
-        memset(c.ext->verts(), 0, totalverts*sizeof(vertinfo));
+        c.ext->surfaces.fill({0,0});
+        std::memset(c.ext->verts(), 0, totalverts*sizeof(vertinfo));
         int offset = 0;
         for(int i = 0; i < 6; ++i)
         {
             if(surfmask&(1<<i))
             {
                 surfaceinfo &surf = c.ext->surfaces[i];
-                if(mapversion <= 0)
-                {
-                    polysurfacecompat psurf;
-                    f->read(&psurf, sizeof(polysurfacecompat));
-                    surf.verts = psurf.verts;
-                    surf.numverts = psurf.numverts;
-                }
-                else
-                {
-                    f->read(&surf, sizeof(surf));
-                }
-                int vertmask = surf.verts, numverts = surf.totalverts();
+                f->read(&surf, sizeof(surf));
+                int vertmask = surf.verts,
+                    numverts = surf.totalverts();
                 if(!numverts)
                 {
                     surf.verts = 0;
@@ -553,15 +458,18 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
                 surf.verts = offset;
                 vertinfo *verts = c.ext->verts() + offset;
                 offset += numverts;
-                ivec v[4], n, vo = ivec(co).mask(0xFFF).shl(3);
+                std::array<ivec, 4> v;
+                ivec n,
+                     vo = ivec(co).mask(0xFFF).shl(3);
                 int layerverts = surf.numverts&Face_MaxVerts, dim = DIMENSION(i), vc = C[dim], vr = R[dim], bias = 0;
                 genfaceverts(c, i, v);
-                bool hasxyz = (vertmask&0x04)!=0, hasuv = mapversion <= 0 && (vertmask&0x40)!=0, hasnorm = (vertmask&0x80)!=0;
+                bool hasxyz = (vertmask&0x04)!=0,
+                     hasnorm = (vertmask&0x80)!=0;
                 if(hasxyz)
                 {
                     ivec e1, e2, e3;
                     n.cross((e1 = v[1]).sub(v[0]), (e2 = v[2]).sub(v[0]));
-                    if(n.iszero())
+                    if(!n)
                     {
                         n.cross(e2, (e3 = v[3]).sub(v[0]));
                     }
@@ -608,21 +516,6 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
                         verts[3].setxyz(xyz);
                         hasxyz = false;
                     }
-                    if(hasuv && vertmask&0x02)
-                    {
-                        for(int k = 0; k < 4; ++k)
-                        {
-                            f->get<ushort>();
-                        }
-                        if(surf.numverts & layerdup)
-                        {
-                            for(int k = 0; k < 4; ++k)
-                            {
-                                f->get<ushort>();
-                            }
-                        }
-                        hasuv = false;
-                    }
                 }
                 if(hasnorm && vertmask&0x08)
                 {
@@ -633,7 +526,7 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
                     }
                     hasnorm = false;
                 }
-                if(hasxyz || hasuv || hasnorm)
+                if(hasxyz || hasnorm)
                 {
                     for(int k = 0; k < layerverts; ++k)
                     {
@@ -645,18 +538,13 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
                             xyz[dim] = n[dim] ? -(bias + n[vc]*xyz[vc] + n[vr]*xyz[vr])/n[dim] : vo[dim];
                             v.setxyz(xyz);
                         }
-                        if(hasuv)
-                        {
-                            f->get<ushort>();
-                            f->get<ushort>();
-                        }
                         if(hasnorm)
                         {
                             v.norm = f->get<ushort>();
                         }
                     }
                 }
-                if(hasuv && (surf.numverts & layerdup))
+                if(surf.numverts & layerdup)
                 {
                     for(int k = 0; k < layerverts; ++k)
                     {
@@ -669,12 +557,20 @@ void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
     }
 }
 
-cube *loadchildren(stream *f, const ivec &co, int size, bool &failed)
+/**
+ * @brief Returns a heap-allocated std::array of cubes read from a file.
+ *
+ * These cubes must be freed using freeocta() when destroyed to prevent a leak.
+ *
+ * All eight cubes are read, unless the stream does not contain a valid leading
+ * digit (see OctaSave enum), whereupon all loading thereafter is not executed.
+ */
+std::array<cube, 8> *loadchildren(stream *f, const ivec &co, int size, bool &failed)
 {
-    cube *c = newcubes();
+    std::array<cube, 8> *c = newcubes();
     for(int i = 0; i < 8; ++i)
     {
-        loadc(f, c[i], ivec(i, co, size), size, failed);
+        loadc(f, (*c)[i], ivec(i, co, size), size, failed);
         if(failed)
         {
             break;
@@ -691,10 +587,9 @@ void savevslot(stream *f, VSlot &vs, int prev)
     f->put<int>(prev);
     if(vs.changed & (1 << VSlot_ShParam))
     {
-        f->put<ushort>(vs.params.length());
-        for(int i = 0; i < vs.params.length(); i++)
+        f->put<ushort>(vs.params.size());
+        for(const SlotShaderParam& p : vs.params)
         {
-            SlotShaderParam &p = vs.params[i];
             f->put<ushort>(std::strlen(p.name));
             f->write(p.name, std::strlen(p.name));
             for(int k = 0; k < 4; ++k)
@@ -760,7 +655,7 @@ void savevslots(stream *f, int numvslots)
         return;
     }
     int *prev = new int[numvslots];
-    memset(prev, -1, numvslots*sizeof(int));
+    std::memset(prev, -1, numvslots*sizeof(int));
     for(int i = 0; i < numvslots; ++i)
     {
         VSlot *vs = vslots[i];
@@ -813,7 +708,8 @@ void loadvslot(stream *f, VSlot &vs, int changed)
         string name;
         for(int i = 0; i < numparams; ++i)
         {
-            SlotShaderParam &p = vs.params.add();
+            vs.params.emplace_back();
+            SlotShaderParam &p = vs.params.back();
             int nlen = f->get<ushort>();
             f->read(name, std::min(nlen, maxstrlen-1));
             name[std::min(nlen, maxstrlen-1)] = '\0';
@@ -822,7 +718,7 @@ void loadvslot(stream *f, VSlot &vs, int changed)
                 f->seek(nlen - (maxstrlen-1), SEEK_CUR);
             }
             p.name = getshaderparamname(name);
-            p.loc = -1;
+            p.loc = SIZE_MAX;
             for(int k = 0; k < 4; ++k)
             {
                 p.val[k] = f->get<float>();
@@ -887,12 +783,17 @@ void loadvslot(stream *f, VSlot &vs, int changed)
 
 void loadvslots(stream *f, int numvslots)
 {
-    int *prev = new int[numvslots];
+    //no point if loading 0 vslots
+    if(numvslots == 0)
+    {
+        return;
+    }
+    uint *prev = new uint[numvslots];
     if(!prev)
     {
         return;
     }
-    memset(prev, -1, numvslots*sizeof(int));
+    std::memset(prev, -1, numvslots*sizeof(int));
     while(numvslots > 0)
     {
         int changed = f->get<int>();
@@ -900,22 +801,23 @@ void loadvslots(stream *f, int numvslots)
         {
             for(int i = 0; i < -changed; ++i)
             {
-                vslots.add(new VSlot(nullptr, vslots.length()));
+                vslots.push_back(new VSlot(nullptr, vslots.size()));
             }
             numvslots += changed;
         }
         else
         {
-            prev[vslots.length()] = f->get<int>();
-            loadvslot(f, *vslots.add(new VSlot(nullptr, vslots.length())), changed);
+            prev[vslots.size()] = f->get<int>();
+            vslots.push_back(new VSlot(nullptr, vslots.size()));
+            loadvslot(f, *vslots.back(), changed);
             numvslots--;
         }
     }
-    for(int i = 0; i < vslots.length(); i++)
+    for(uint i = 0; i < vslots.size(); i++)
     {
-        if(vslots.inrange(prev[i]))
+        if(vslots.size() > prev[i])
         {
-            vslots[prev[i]]->next = vslots[i];
+            vslots.at(prev[i])->next = vslots[i];
         }
     }
     delete[] prev;
@@ -925,7 +827,7 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
 {
     if(!*mname)
     {
-        mname = clientmap;
+        mname = clientmap.c_str();
     }
     setmapfilenames(*mname ? mname : "untitled");
     if(savebak)
@@ -938,7 +840,7 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
         conoutf(Console_Warn, "could not write map to %s", ogzname);
         return false;
     }
-    int numvslots = vslots.length();
+    uint numvslots = vslots.size();
     if(!multiplayer)
     {
         numvslots = compactvslots();
@@ -949,22 +851,22 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
     renderprogress(0, "saving map...");
 
     mapheader hdr;
-    memcpy(hdr.magic, "TMAP", 4);
+    std::memcpy(hdr.magic, "TMAP", 4);
     hdr.version = currentmapversion;
     hdr.headersize = sizeof(hdr);
-    hdr.worldsize = worldsize;
+    hdr.worldsize = mapsize();
     hdr.numents = 0;
-    const vector<extentity *> &ents = entities::getents();
-    for(int i = 0; i < ents.length(); i++)
+    const std::vector<extentity *> &ents = entities::getents();
+    for(extentity* const& e : ents)
     {
-        if(ents[i]->type!=EngineEnt_Empty)
+        if(e->type!=EngineEnt_Empty)
         {
             hdr.numents++;
         }
     }
     hdr.numvars = 0;
     hdr.numvslots = numvslots;
-    ENUMERATE(idents, ident, id,
+    for(auto& [k, id] : idents)
     {
         if((id.type == Id_Var || id.type == Id_FloatVar || id.type == Id_StringVar) &&
              id.flags&Idf_Override  &&
@@ -973,10 +875,10 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
         {
             hdr.numvars++;
         }
-    });
+    }
     f->write(&hdr, sizeof(hdr));
 
-    ENUMERATE(idents, ident, id,
+    for(auto& [k, id] : idents)
     {
         if((id.type!=Id_Var && id.type!=Id_FloatVar && id.type!=Id_StringVar) ||
           !(id.flags&Idf_Override)   ||
@@ -1015,7 +917,7 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
                 f->write(*id.storage.s, std::strlen(*id.storage.s));
                 break;
         }
-    });
+    }
     if(debugvars)
     {
         conoutf(Console_Debug, "wrote %d vars", hdr.numvars);
@@ -1028,30 +930,35 @@ bool cubeworld::save_world(const char *mname, const char *gameident)
     f->write(0, 0);
     //=== end of padding
     f->put<ushort>(texmru.size());
-    for(uint i = 0; i < texmru.size(); i++)
+    for(const ushort &i : texmru)
     {
-        f->put<ushort>(texmru[i]);
+        f->put<ushort>(i);
     }
-    for(int i = 0; i < ents.length(); i++)
+    for(const entity *i : ents)
     {
-        if(ents[i]->type!=EngineEnt_Empty)
+        if(i->type!=EngineEnt_Empty)
         {
-            entity tmp = *ents[i];
+            entity tmp = *i;
             f->write(&tmp, sizeof(entity));
         }
     }
     savevslots(f, numvslots);
     renderprogress(0, "saving octree...");
-    savec(worldroot, ivec(0, 0, 0), worldsize>>1, f);
+    savec(*worldroot, ivec(0, 0, 0), rootworld.mapsize()>>1, f);
     delete f;
     conoutf("wrote map file %s", ogzname);
     return true;
 }
 
-static uint mapcrc = 0;
+uint cubeworld::getmapcrc() const
+{
+    return mapcrc;
+}
 
-uint getmapcrc() { return mapcrc; }
-void clearmapcrc() { mapcrc = 0; }
+void cubeworld::clearmapcrc()
+{
+    mapcrc = 0;
+}
 
 bool cubeworld::load_world(const char *mname, const char *gameident, const char *gameinfo, const char *cname)
 {
@@ -1065,7 +972,7 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
     }
     mapheader hdr;
     octaheader ohdr;
-    memset(&ohdr, 0, sizeof(ohdr));
+    std::memset(&ohdr, 0, sizeof(ohdr));
     if(!loadmapheader(f, ogzname, hdr, ohdr))
     {
         delete f;
@@ -1078,13 +985,12 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
     renderprogress(0, "clearing world...");
     freeocta(worldroot);
     worldroot = nullptr;
-    int worldscale = 0;
-    while(1<<worldscale < hdr.worldsize)
+    int loadedworldscale = 0;
+    while(1<<loadedworldscale < hdr.worldsize)
     {
-        worldscale++;
+        loadedworldscale++;
     }
-    setvar("mapsize", 1<<worldscale, true, false);
-    setvar("mapscale", worldscale, true, false);
+    worldscale = loadedworldscale;
     renderprogress(0, "loading vars...");
     for(int i = 0; i < hdr.numvars; ++i)
     {
@@ -1190,8 +1096,9 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
     }
     int eif = f->get<ushort>(),
         extrasize = f->get<ushort>();
-    vector<char> extras;
-    f->read(extras.pad(extrasize), extrasize);
+    std::vector<char> extras;
+    extras.reserve(extrasize);
+    f->read(&(*extras.begin()), extrasize);
     texmru.clear();
     ushort nummru = f->get<ushort>();
     for(int i = 0; i < nummru; ++i)
@@ -1199,13 +1106,12 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
         texmru.push_back(f->get<ushort>());
     }
     renderprogress(0, "loading entities...");
-    vector<extentity *> &ents = entities::getents();
+    std::vector<extentity *> &ents = entities::getents();
     for(int i = 0; i < (std::min(hdr.numents, maxents)); ++i)
     {
         extentity &e = *entities::newentity();
-        ents.add(&e);
+        ents.push_back(&e);
         f->read(&e, sizeof(entity));
-        fixent(e, hdr.version);
         //delete entities from other games
         if(!samegame)
         {
@@ -1215,7 +1121,8 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
             }
             if(e.type>=EngineEnt_GameSpecific)
             {
-                entities::deleteentity(ents.pop());
+                entities::deleteentity(ents.back());
+                ents.pop_back();
                 continue;
             }
         }
@@ -1260,4 +1167,10 @@ bool cubeworld::load_world(const char *mname, const char *gameident, const char 
         conoutf(Console_Echo, "%s", maptitle);
     }
     return true;
+}
+
+void initworldiocmds()
+{
+    addcommand("mapcfgname", reinterpret_cast<identfun>(mapcfgname), "", Id_Command);
+    addcommand("mapversion", reinterpret_cast<identfun>(+[] () {intret(currentmapversion);}), "", Id_Command);
 }

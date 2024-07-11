@@ -13,6 +13,8 @@
 #include "octarender.h"
 #include "rendergl.h"
 #include "renderva.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/control.h"
@@ -93,7 +95,7 @@ namespace //internal functionality not seen by other files
     //generate the grass geometry placed above cubes
     //grass always faces the camera (billboarded)
     //and therefore grass geom is calculated realtime to face the cam
-    void gengrassquads(grassgroup *&group, const grasswedge &w, const grasstri &g, Texture *tex)
+    void gengrassquads(grassgroup *&group, const grasswedge &w, const grasstri &g, const Texture *tex)
     {
         float t = camera1->o.dot(w.dir);
         int tstep = static_cast<int>(std::ceil(t/grassstep));
@@ -162,7 +164,7 @@ namespace //internal functionality not seen by other files
             {
                 const vec *prev = leftv;
                 float prevdist = leftdist;
-                if(--leftv < g.v)
+                if(--leftv < &g.v[0])
                 {
                     leftv += g.numv;
                 }
@@ -171,7 +173,7 @@ namespace //internal functionality not seen by other files
                 {
                     prev = leftv;
                     prevdist = leftdist;
-                    if(--leftv < g.v)
+                    if(--leftv < &g.v[0])
                     {
                         leftv += g.numv;
                     }
@@ -189,7 +191,7 @@ namespace //internal functionality not seen by other files
                 float prevdist = rightdist;
                 if(++rightv >= &g.v[g.numv])
                 {
-                    rightv = g.v;
+                    rightv = &g.v[0];
                 }
                 rightdist = rightv->dot(w.dir);
                 if(dist <= rightdist)
@@ -198,7 +200,7 @@ namespace //internal functionality not seen by other files
                     prevdist = rightdist;
                     if(++rightv >= &g.v[g.numv])
                     {
-                        rightv = g.v;
+                        rightv = &g.v[0];
                     }
                     rightdist = rightv->dot(w.dir);
                 }
@@ -276,11 +278,10 @@ namespace //internal functionality not seen by other files
     }
 
     // generates grass geometry for a given vertex array
-    void gengrassquads(vtxarray *va)
+    void gengrassquads(const vtxarray &va)
     {
-        for(int i = 0; i < va->grasstris.length(); i++)
+        for(const grasstri &g : va.grasstris)
         {
-            grasstri &g = va->grasstris[i];
             if(view.isfoggedsphere(g.radius, g.center))
             {
                 continue;
@@ -300,9 +301,8 @@ namespace //internal functionality not seen by other files
                 s.grasstex = textureload(s.grass, 2);
             }
             grassgroup *group = nullptr;
-            for(int i = 0; i < numgrasswedges; ++i)
+            for(const grasswedge &w : grasswedges)
             {
-                grasswedge &w = grasswedges[i];
                 if(w.bound1.dist(g.center) > g.radius || w.bound2.dist(g.center) > g.radius)
                 {
                     continue;
@@ -312,22 +312,17 @@ namespace //internal functionality not seen by other files
         }
     }
 
-    Shader *grassshader = nullptr;
+    bool hasgrassshader = false;
 
     void cleargrassshaders()
     {
-        grassshader = nullptr;
+        hasgrassshader = false;
     }
 
     Shader *loadgrassshader()
     {
-        string opts;
-        int optslen = 0;
-
-        opts[optslen] = '\0';
-
-        DEF_FORMAT_STRING(name, "grass%s", opts);
-        return generateshader(name, "grassshader \"%s\"", opts);
+        std::string name = "grass";
+        return generateshader(name.c_str(), "grassshader ");
 
     }
 }
@@ -352,9 +347,8 @@ void generategrass()
         }
     }
 
-    for(int i = 0; i < numgrasswedges; ++i)
+    for(grasswedge &w : grasswedges)
     {
-        grasswedge &w = grasswedges[i];
         w.bound1.offset = -camera1->o.dot(w.bound1);
         w.bound2.offset = -camera1->o.dot(w.bound2);
     }
@@ -369,7 +363,7 @@ void generategrass()
         {
             continue;
         }
-        gengrassquads(va);
+        gengrassquads(*va);
     }
 
     if(grassgroups.empty())
@@ -393,12 +387,12 @@ void generategrass()
 
 void loadgrassshaders()
 {
-    grassshader = loadgrassshader();
+    hasgrassshader = (loadgrassshader() != nullptr);
 }
 
 void rendergrass()
 {
-    if(!grass || !grassdist || grassgroups.empty() || !grassshader)
+    if(!grass || !grassdist || grassgroups.empty() || !hasgrassshader)
     {
         return;
     }
@@ -418,10 +412,8 @@ void rendergrass()
     GLOBALPARAMF(grasstest, grasstest); //toggles use of grass (depth) test shader
 
     int texid = -1;
-    for(uint i = 0; i < grassgroups.size(); i++)
+    for(const grassgroup &g : grassgroups)
     {
-        grassgroup &g = grassgroups[i];
-
         if(texid != g.tex)
         {
             glBindTexture(GL_TEXTURE_2D, g.tex);

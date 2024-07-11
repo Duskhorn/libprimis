@@ -14,6 +14,9 @@
 #include "../../shared/glemu.h"
 #include "../../shared/glexts.h"
 
+#include <memory>
+#include <optional>
+
 #include "console.h"
 #include "control.h"
 #include "input.h"
@@ -33,6 +36,9 @@
 #include "render/renderlights.h"
 #include "render/rendermodel.h"
 #include "render/rendertext.h"
+#include "render/renderttf.h"
+#include "render/shader.h"
+#include "render/shaderparam.h"
 #include "render/texture.h"
 
 #include "textedit.h"
@@ -58,6 +64,8 @@
  * }
  */
 
+static ModelPreview modelpreview = ModelPreview();
+
 namespace UI
 {
     float cursorx = 0.499f,
@@ -65,10 +73,14 @@ namespace UI
 
     static void quads(float x, float y, float w, float h, float tx = 0, float ty = 0, float tw = 1, float th = 1)
     {
-        gle::attribf(x,   y);   gle::attribf(tx,    ty);
+        gle::defvertex(2);
+        gle::deftexcoord0();
+        gle::begin(GL_TRIANGLE_STRIP);
         gle::attribf(x+w, y);   gle::attribf(tx+tw, ty);
+        gle::attribf(x,   y);   gle::attribf(tx,    ty);
         gle::attribf(x+w, y+h); gle::attribf(tx+tw, ty+th);
         gle::attribf(x,   y+h); gle::attribf(tx,    ty+th);
+        gle::end();
     }
 
     static void quad(float x, float y, float w, float h, const vec2 tc[4])
@@ -97,7 +109,7 @@ namespace UI
 
             }
 
-            bool isfullyclipped(float x, float y, float w, float h)
+            bool isfullyclipped(float x, float y, float w, float h) const
             {
                 return x1 == x2 || y1 == y2 || x >= x2 || y >= y2 || x+w <= x1 || y+h <= y1;
             }
@@ -107,46 +119,47 @@ namespace UI
             float x1, y1, x2, y2;
     };
 
-    static std::vector<ClipArea> clipstack;
-
-    static void pushclip(float x, float y, float w, float h)
-    {
-        if(clipstack.empty())
-        {
-            glEnable(GL_SCISSOR_TEST);
-        }
-        ClipArea &c = clipstack.emplace_back(ClipArea(x, y, w, h));
-        if(clipstack.size() >= 2)
-        {
-            c.intersect(clipstack[clipstack.size()-2]);
-        }
-        c.scissor();
-    }
-
-    static void popclip()
-    {
-        clipstack.pop_back();
-        if(clipstack.empty())
-        {
-            glDisable(GL_SCISSOR_TEST);
-        }
-        else
-        {
-            clipstack.back().scissor();
-        }
-    }
-
-    static bool isfullyclipped(float x, float y, float w, float h)
-    {
-        if(clipstack.empty())
-        {
-            return false;
-        }
-        return clipstack.back().isfullyclipped(x, y, w, h);
-    }
     namespace
     {
-        enum
+        std::vector<ClipArea> clipstack;
+
+        void pushclip(float x, float y, float w, float h)
+        {
+            if(clipstack.empty())
+            {
+                glEnable(GL_SCISSOR_TEST);
+            }
+            ClipArea &c = clipstack.emplace_back(ClipArea(x, y, w, h));
+            if(clipstack.size() >= 2)
+            {
+                c.intersect(clipstack[clipstack.size()-2]);
+            }
+            c.scissor();
+        }
+
+        void popclip()
+        {
+            clipstack.pop_back();
+            if(clipstack.empty())
+            {
+                glDisable(GL_SCISSOR_TEST);
+            }
+            else
+            {
+                clipstack.back().scissor();
+            }
+        }
+
+        bool isfullyclipped(float x, float y, float w, float h)
+        {
+            if(clipstack.empty())
+            {
+                return false;
+            }
+            return clipstack.back().isfullyclipped(x, y, w, h);
+        }
+
+        enum Alignment
         {
             Align_Mask = 0xF,
 
@@ -165,7 +178,7 @@ namespace UI
             Align_Bottom  = 3 << 2,
         };
 
-        enum
+        enum ClampDirection
         {
             Clamp_Mask    = 0xF0,
             Clamp_Left    = 0x10,
@@ -176,7 +189,7 @@ namespace UI
             NO_ADJUST     = Align_HNone | Align_VNone,
         };
 
-        enum
+        enum ElementState
         {
             State_Hover       = 1 << 0,
             State_Press       = 1 << 1,
@@ -195,13 +208,13 @@ namespace UI
             State_HoldMask = State_Hold | State_AltHold | State_EscHold
         };
 
-        enum
+        enum ElementBlend
         {
             Blend_Alpha,
             Blend_Mod
         };
 
-        enum
+        enum ChangeDrawFlags
         {
             Change_Shader = 1 << 0,
             Change_Color  = 1 << 1,
@@ -213,6 +226,10 @@ namespace UI
     static Object *buildparent = nullptr;
     static int buildchild = -1;
 
+    //type: the type of object to build
+    //o the name of the temp variable to use
+    //setup: a snippet of c++ to run to set up the object
+    //contents: the content passed to the buildchildren() call
     #define BUILD(type, o, setup, contents) do { \
         if(buildparent) \
         { \
@@ -256,38 +273,22 @@ namespace UI
             ushort state, childstate;
             Object *parent;
 
-            //takes a polymorphic std::function parameter to allow [this](){} macros
-            //to be passed as the "body"
-            void loopchildren(std::function<void(Object *)> body)
-            {
-                for(int i = 0; i < static_cast<int>(children.size()); i++)
-                {
-                    Object *o = children.at(i);
-                    body(o);
-                }
-            }
+            //note reverse iteration
+            #define LOOP_CHILDREN_REV(o, body) do { \
+                for(int i = static_cast<int>(children.size()); --i >=0;) \
+                { \
+                    Object *o = children.at(i); \
+                    body; \
+                } \
+            } while(0)
 
-            //takes a polymorphic std::function parameter to allow [this](){} macros
-            //to be passed as the "body"
-            void loopchildrenrev(std::function<void(Object *)> body)
-            {
-                for(int i = static_cast<int>(children.size()); --i >=0;)
-                {
-                    Object *o = children.at(i);
-                    body(o);
-                }
-            }
-
-            //takes a polymorphic std::function parameter to allow [this](){} macros
-            //to be passed as the "body"
-            void loopchildrange(uint start, uint end, std::function<void(Object *)> body)
-            {
-                for(uint i = start; i < end; i++)
-                {
-                    Object *o = children.at(i);
-                    body(o);
-                }
-            }
+            #define LOOP_CHILD_RANGE(start, end, o, body) do { \
+                for(int i = start; i < end; i++) \
+                { \
+                    Object *o = children.at(i); \
+                    body; \
+                } \
+            } while(0)
 
             Object() :  x(), y(), w(), h(), adjust(0), state(0), childstate(0), parent() {}
             virtual ~Object()
@@ -325,13 +326,13 @@ namespace UI
             virtual void layout()
             {
                 w = h = 0;
-                loopchildren( [this] (Object * o)
+                for(Object *o : children)
                 {
                     o->x = o->y = 0;
                     o->layout();
                     w = std::max(w, o->x + o->w);
                     h = std::max(h, o->y + o->h);
-                });
+                }
             }
 
             void buildchildren(uint *contents)
@@ -362,7 +363,10 @@ namespace UI
                 state &= ~flags;
                 if(childstate & flags)
                 {
-                    loopchildren([flags, this] (Object * o) { if((o->state | o->childstate) & flags) o->clearstate(flags); });
+                    for(Object *o : children)
+                    {
+                        if((o->state | o->childstate) & flags) o->clearstate(flags);
+                    }
                     childstate &= ~flags;
                 }
             }
@@ -391,7 +395,10 @@ namespace UI
             void resetchildstate()
             {
                 resetstate();
-                loopchildren( [] (Object * o)  {o->resetchildstate();});
+                for(Object *o : children)
+                {
+                     o->resetchildstate();
+                }
             }
 
             bool hasstate(int flags) const
@@ -406,13 +413,13 @@ namespace UI
 
             virtual void draw(float sx, float sy)
             {
-                loopchildren( [sx, sy, this] (Object * o)
+                for(Object *o : children)
                 {
                     if(!isfullyclipped(sx + o->x, sy + o->y, o->w, o->h))
                     {
                         o->draw(sx + o->x, sy + o->y);
                     }
-                });
+                }
             }
 
             /* DOSTATES: executes the DOSTATE macro for the applicable special keys
@@ -459,41 +466,38 @@ namespace UI
 
             virtual bool rawkey(int code, bool isdown)
             {
-                bool down = false;
-                loopchildrenrev( [&] (Object * o)
+                LOOP_CHILDREN_REV(o,
                 {
                     if(o->rawkey(code, isdown))
                     {
-                        down = true;
+                        return true;
                     }
                 });
-                return down;
+                return false;
             }
 
             virtual bool key(int code, bool isdown)
             {
-                bool down = false;
-                loopchildrenrev([&] (Object * o)
+                LOOP_CHILDREN_REV(o,
                 {
                     if(o->key(code, isdown))
                     {
-                        down = true;
+                        return true;
                     }
                 });
-                return down;
+                return false;
             }
 
             virtual bool textinput(const char *str, int len)
             {
-                bool text = false; //needed to make void lambda act like bool
-                loopchildrenrev([&] (Object * o)
+                LOOP_CHILDREN_REV(o,
                 {
                     if(o->textinput(str, len))
                     {
-                        text = true;
+                        return true;
                     }
                 });
-                return text;
+                return false;
             }
 
             virtual int childcolumns() const
@@ -621,7 +625,10 @@ namespace UI
 
             void adjustchildrento(float px, float py, float pw, float ph)
             {
-                loopchildren([px, py, pw, ph] (Object * o) {o->adjustlayout(px, py, pw, ph);});
+                for(Object *o : children)
+                {
+                    o->adjustlayout(px, py, pw, ph);
+                }
             }
 
             virtual void adjustchildren()
@@ -659,40 +666,40 @@ namespace UI
                 childstate &= State_HoldMask;
             }
 
-            #define PROPAGATE_STATE(o, cx, cy, mask, inside, body) \
-                /* loop through children back to front */ \
-                loopchildrenrev( [&] (Object * o)\
-                { \
-                    bool shouldcontinue = true; \
-                    if(((o->state | o->childstate) & mask) != mask) \
-                    { \
-                        shouldcontinue = false; \
-                    } \
-                    if(shouldcontinue) \
-                    { \
-                        float o##x = cx - o->x; /*offset x*/ \
-                        float o##y = cy - o->y; /*offset y*/ \
-                        if(!inside) \
-                        { \
-                            o##x = std::clamp(o##x, 0.0f, o->w); /*clamp offsets to Object bounds in x*/ \
-                            o##y = std::clamp(o##y, 0.0f, o->h); /*clamp offsets to Object bounds in y*/ \
-                            body; \
-                        } \
-                        else if(o##x >= 0 && o##x < o->w && o##y >= 0 && o##y < o->h) /*if in bounds execute body*/ \
-                        { \
-                            body; \
-                        } \
-                    } \
-                })
+            void changechildstate(Object * o, void (Object::*member)(float, float, int, bool, int), float ox, float oy, int mask, bool inside, int setflags)
+            {
+                (o->*member)(ox, oy, mask, inside, setflags); /*child's->func##children fxn called*/
+                childstate |= (o->state | o->childstate) & (setflags); /*set childstate*/
+            }
+
+            void propagatestate(float cx, float cy, int mask, bool inside, int setflags, void (UI::Object::*method)(float, float, int, bool, int))
+            {
+                for(int i = static_cast<int>(children.size()); --i >= 0;)
+                {
+                    Object *o = children.at(i);
+                    if(((o->state | o->childstate) & mask) != mask)
+                    {
+                        continue;
+                    }
+                    float ox = cx - o->x; /*offset x*/
+                    float oy = cy - o->y; /*offset y*/
+                    if(!inside)
+                    {
+                        ox = std::clamp(ox, 0.0f, o->w); /*clamp offsets to Object bounds in x*/
+                        oy = std::clamp(oy, 0.0f, o->h); /*clamp offsets to Object bounds in y*/
+                        changechildstate(o, method, ox, oy, mask, inside, setflags);
+                    }
+                    else if(ox >= 0 && ox < o->w && oy >= 0 && oy < o->h) /*if in bounds execute body*/
+                    {
+                        changechildstate(o, method, ox, oy, mask, inside, setflags);
+                    }
+                }
+            }
 
             #define DOSTATE(flags, func) \
                 virtual void func##children(float cx, float cy, int mask, bool inside, int setflags) \
                 { \
-                    PROPAGATE_STATE(o, cx, cy, mask, inside, \
-                    { \
-                        o->func##children(ox, oy, mask, inside, setflags); /*child's->func##children fxn called*/ \
-                        childstate |= (o->state | o->childstate) & (setflags); /*set childstate*/ \
-                    }); \
+                    propagatestate(cx, cy, mask, inside, setflags, &UI::Object::func##children); \
                     if(target(cx, cy)) \
                     { \
                         state |= (setflags); \
@@ -701,7 +708,6 @@ namespace UI
                 } \
                 virtual void func(float, float) {} /*note unnamed function parameters*/
             DOSTATES
-            #undef PROPAGATE_STATE
             #undef DOSTATE
 
             virtual const char *gettype() const
@@ -714,36 +720,35 @@ namespace UI
                 return gettype();
             }
 
-            Object *find(const char *name, bool recurse = true, const Object *exclude = nullptr)
+            Object *find(const char *name, bool recurse = true, const Object *exclude = nullptr) const
             {
-                Object * out = nullptr;
-                loopchildren( [&out, name, recurse, exclude] (Object * o)
+                for(Object *o : children)
                 {
                     if(o != exclude && o->isnamed(name))
                     {
-                        out = o;
+                        return o;
                     }
-                });
+                }
                 if(recurse)
                 {
-                    loopchildren( [&out, name, exclude] (Object * o)
+                    for(Object *o : children)
                     {
                         if(o != exclude)
                         {
                             Object *found = o->find(name);
                             if(found)
                             {
-                                out = o;
+                                return found;
                             }
                         }
-                    });
+                    }
                 }
                 return nullptr;
             }
 
-            Object *findsibling(const char *name)
+            Object *findsibling(const char *name) const
             {
-                for(Object *prev = this, *cur = parent; cur; prev = cur, cur = cur->parent)
+                for(const Object *prev = this, *cur = parent; cur; prev = cur, cur = cur->parent)
                 {
                     Object *o = cur->find(name, true, prev);
                     if(o)
@@ -791,7 +796,7 @@ namespace UI
 
     static Window *window = nullptr;
 
-    struct Window : Object
+    struct Window final : Object
     {
         char *name;
         uint *contents, *onshow, *onhide;
@@ -822,12 +827,12 @@ namespace UI
             return "#Window";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        const char *getname() const
+        const char *getname() const override final
         {
             return name;
         }
@@ -860,7 +865,7 @@ namespace UI
             px = py = pw = ph = 0;
         }
 
-        void layout()
+        void layout() override final
         {
             if(state & State_Hidden)
             {
@@ -872,7 +877,7 @@ namespace UI
             window = nullptr;
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             if(state & State_Hidden)
             {
@@ -905,7 +910,7 @@ namespace UI
             draw(x, y);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             if(state & State_Hidden)
             {
@@ -918,14 +923,14 @@ namespace UI
 
         void adjustlayout()
         {
-            float aspect = static_cast<float>(hudw)/hudh;
+            float aspect = static_cast<float>(hudw())/hudh();
             ph = std::max(std::max(h, w/aspect), 1.0f);
             pw = aspect*ph;
             Object::adjustlayout(0, 0, pw, ph);
         }
 
         #define DOSTATE(flags, func) \
-            void func##children(float cx, float cy, int mask, bool inside, int setflags) \
+            void func##children(float cx, float cy, int mask, bool inside, int setflags) override final \
             { \
                 if(!allowinput || state&State_Hidden || pw <= 0 || ph <= 0) \
                 { \
@@ -941,7 +946,7 @@ namespace UI
         DOSTATES
         #undef DOSTATE
 
-        void escrelease(float cx, float cy);
+        void escrelease(float cx, float cy) override final;
 
         void projection()
         {
@@ -951,30 +956,30 @@ namespace UI
             soffset = vec2(hudmatrix.d.x, hudmatrix.d.y).mul(0.5f).add(0.5f);
         }
 
-        void calcscissor(float x1, float y1, float x2, float y2, int &sx1, int &sy1, int &sx2, int &sy2, bool clip = true)
+        void calcscissor(float x1, float y1, float x2, float y2, int &sx1, int &sy1, int &sx2, int &sy2, bool clip = true) const
         {
             vec2 s1 = vec2(x1, y2).mul(sscale).add(soffset),
                  s2 = vec2(x2, y1).mul(sscale).add(soffset);
-            sx1 = static_cast<int>(std::floor(s1.x*hudw + 0.5f));
-            sy1 = static_cast<int>(std::floor(s1.y*hudh + 0.5f));
-            sx2 = static_cast<int>(std::floor(s2.x*hudw + 0.5f));
-            sy2 = static_cast<int>(std::floor(s2.y*hudh + 0.5f));
+            sx1 = static_cast<int>(std::floor(s1.x*hudw() + 0.5f));
+            sy1 = static_cast<int>(std::floor(s1.y*hudh() + 0.5f));
+            sx2 = static_cast<int>(std::floor(s2.x*hudw() + 0.5f));
+            sy2 = static_cast<int>(std::floor(s2.y*hudh() + 0.5f));
             if(clip)
             {
-                sx1 = std::clamp(sx1, 0, hudw);
-                sy1 = std::clamp(sy1, 0, hudh);
-                sx2 = std::clamp(sx2, 0, hudw);
-                sy2 = std::clamp(sy2, 0, hudh);
+                sx1 = std::clamp(sx1, 0, hudw());
+                sy1 = std::clamp(sy1, 0, hudh());
+                sx2 = std::clamp(sx2, 0, hudw());
+                sy2 = std::clamp(sy2, 0, hudh());
             }
         }
 
-        float calcabovehud()
+        float calcabovehud() const
         {
             return 1 - (y*sscale.y + soffset.y);
         }
     };
 
-    static hashnameset<Window *> windows;
+    static std::unordered_map<std::string, Window *> windows;
 
     void ClipArea::scissor()
     {
@@ -983,13 +988,16 @@ namespace UI
         glScissor(sx1, sy1, sx2-sx1, sy2-sy1);
     }
 
-    struct World : Object
+    struct World final : Object
     {
         static const char *typestr() { return "#World"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override final
+        {
+            return typestr();
+        }
 
         #define LOOP_WINDOWS(o, body) do { \
-            for(int i = 0; i < static_cast<int>(children.size()); i++) \
+            for(uint i = 0; i < children.size(); i++) \
             { \
                 Window *o = static_cast<Window *>(children[i]); \
                 body; \
@@ -1004,13 +1012,13 @@ namespace UI
             } \
         } while(0)
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             LOOP_WINDOWS(w, w->adjustlayout());
         }
 
         #define DOSTATE(flags, func) \
-            void func##children(float cx, float cy, int mask, bool inside, int setflags) \
+            void func##children(float cx, float cy, int mask, bool inside, int setflags) override final \
             { \
                 LOOP_WINDOWS_REV(w, \
                 { \
@@ -1037,11 +1045,11 @@ namespace UI
             LOOP_WINDOWS(w,
             {
                 w->build();
-                if(static_cast<int>(children.size()) < i )
+                if(children.size() <= i )
                 {
                     break;
                 }
-                if(children[i] != w)
+                if(children.at(i) != w)
                 {
                     i--;
                 }
@@ -1066,7 +1074,10 @@ namespace UI
         {
             children.erase(children.begin() + index);
             childstate = 0;
-            loopchildren([this] (Object * o) {childstate |= o->state | o->childstate;});
+            for(Object *o : children)
+            {
+                childstate |= o->state | o->childstate;
+            }
             w->hide();
         }
 
@@ -1119,7 +1130,9 @@ namespace UI
             return false;
         }
 
-        void draw(float, float) {} //note unnamed function parameters
+        void draw(float, float) override final //note unnamed function parameters
+        {
+        }
 
         void draw()
         {
@@ -1166,7 +1179,7 @@ namespace UI
         window = nullptr;
     }
 
-    struct HorizontalList : Object
+    struct HorizontalList final : Object
     {
         float space, subw;
 
@@ -1177,7 +1190,7 @@ namespace UI
             return "#HorizontalList";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -1188,26 +1201,26 @@ namespace UI
             space = space_;
         }
 
-        uchar childalign() const
+        uchar childalign() const override final
         {
             return Align_VCenter;
         }
 
-        void layout()
+        void layout() override final
         {
             subw = h = 0;
-            loopchildren( [this] (Object * o)
+            for(Object *o : children)
             {
                 o->x = subw;
                 o->y = 0;
                 o->layout();
                 subw += o->w;
                 h = std::max(h, o->y + o->h);
-            });
+            }
             w = subw + space*std::max(static_cast<int>(children.size()) - 1, 0);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             if(children.empty())
             {
@@ -1229,7 +1242,7 @@ namespace UI
         }
     };
 
-    struct VerticalList : Object
+    struct VerticalList final : Object
     {
         float space, subh;
 
@@ -1240,7 +1253,7 @@ namespace UI
             return "#VerticalList";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -1251,26 +1264,26 @@ namespace UI
             space = space_;
         }
 
-        uchar childalign() const
+        uchar childalign() const override final
         {
             return Align_HCenter;
         }
 
-        void layout()
+        void layout() override final
         {
             w = subh = 0;
-            loopchildren( [this] (Object * o)
+            for(Object *o : children)
             {
                 o->x = 0;
                 o->y = subh;
                 o->layout();
                 subh += o->h;
                 w = std::max(w, o->x + o->w);
-            });
+            }
             h = subh + space*std::max(static_cast<int>(children.size()) - 1, 0);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             if(children.empty())
             {
@@ -1281,18 +1294,18 @@ namespace UI
                   sy     = 0,
                   rspace = (h - subh) / std::max(static_cast<int>(children.size()) - 1, 1),
                   rstep = (h - subh) / children.size();
-            loopchildren( [&offset, &rspace, rstep, &sy, this] (Object * o)
+            for(Object *o : children)
             {
                 o->y = offset;
                 offset += o->h + rspace;
                 float sh = o->h + rstep;
                 o->adjustlayout(0, sy, w, sh);
                 sy += sh;
-            });
+            }
         }
     };
 
-    struct Grid : Object
+    struct Grid final : Object
     {
         int columns;
         float spacew, spaceh, subw, subh;
@@ -1305,7 +1318,7 @@ namespace UI
             return "#Grid";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -1318,19 +1331,19 @@ namespace UI
             spaceh = spaceh_;
         }
 
-        uchar childalign() const
+        uchar childalign() const override final
         {
             return 0;
         }
 
-        void layout()
+        void layout() override final
         {
-            widths.resize(0);
-            heights.resize(0);
+            widths.clear();
+            heights.clear();
 
             int column = 0,
                 row = 0;
-            loopchildren( [&column, &row, this] (Object * o)
+            for(Object *o : children)
             {
                 o->layout();
                 if(column >= static_cast<int>(widths.size()))
@@ -1354,22 +1367,22 @@ namespace UI
                 {
                     row++;
                 }
-            });
+            }
 
             subw = subh = 0;
-            for(int i = 0; i < static_cast<int>(widths.size()); i++)
+            for(const float &i : widths)
             {
-                subw += widths[i];
+                subw += i;
             }
-            for(int i = 0; i < static_cast<int>(heights.size()); i++)
+            for(const float &i : heights)
             {
-                subh += heights[i];
+                subh += i;
             }
             w = subw + spacew*std::max(static_cast<int>(widths.size()) - 1, 0);
             h = subh + spaceh*std::max(static_cast<int>(heights.size()) - 1, 0);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             if(children.empty())
             {
@@ -1385,7 +1398,7 @@ namespace UI
                   cstep = (w - subw) / widths.size(),
                   rspace = (h - subh) / std::max(static_cast<int>(heights.size()) - 1, 1),
                   rstep = (h - subh) / heights.size();
-            loopchildren( [&row, &column, &offsety, &sy, &offsetx, &sx, cspace, cstep, rspace, rstep, this] (Object * o)
+            for(Object *o : children)
             {
                 o->x = offsetx;
                 o->y = offsety;
@@ -1400,7 +1413,7 @@ namespace UI
                     sy += heights[row] + rstep;
                     row++;
                 }
-            });
+            }
         }
     };
 
@@ -1414,22 +1427,22 @@ namespace UI
         {
             return "#TableHeader";
         }
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        uchar childalign() const
+        uchar childalign() const override final
         {
             return columns < 0 ? Align_VCenter : Align_HCenter | Align_VCenter;
         }
 
-        int childcolumns() const
+        int childcolumns() const override final
         {
             return columns;
         }
 
-        void buildchildren(uint *columndata, uint *contents)
+        void buildchildren(const uint *columndata, const uint *contents)
         {
             Object *oldparent = buildparent;
             int oldchild = buildchild;
@@ -1457,21 +1470,21 @@ namespace UI
             resetstate();
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
-            loopchildrange(static_cast<uint>(columns), children.size(), [this] (Object * o) {o->adjustlayout(0, 0, w, h);});
+            LOOP_CHILD_RANGE(columns, static_cast<int>(children.size()), o, o->adjustlayout(0, 0, w, h));
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
-            loopchildrange(static_cast<uint>(columns), children.size(), [sx, sy, this] (Object * o)
+            LOOP_CHILD_RANGE(columns, static_cast<int>(children.size()), o,
             {
                 if(!isfullyclipped(sx + o->x, sy + o->y, o->w, o->h))
                 {
                     o->draw(sx + o->x, sy + o->y);
                 }
             });
-            loopchildrange(0, static_cast<uint>(columns), [sx, sy, this] (Object * o)
+            LOOP_CHILD_RANGE(0, columns, o,
             {
                 if(!isfullyclipped(sx + o->x, sy + o->y, o->w, o->h))
                 {
@@ -1481,12 +1494,15 @@ namespace UI
         }
     };
 
-    struct TableRow : TableHeader
+    struct TableRow final: TableHeader
     {
         static const char *typestr() { return "#TableRow"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override final
+        {
+            return typestr();
+        }
 
-        bool target(float, float) //note unnamed function parameters
+        bool target(float, float) override final //note unnamed function parameters
         {
             return true;
         }
@@ -1501,7 +1517,7 @@ namespace UI
         } \
     } while(0)
 
-    struct Table : Object
+    struct Table final : Object
     {
         float spacew, spaceh, subw, subh;
         std::vector<float> widths;
@@ -1509,7 +1525,7 @@ namespace UI
         {
             return "#Table";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -1521,17 +1537,17 @@ namespace UI
             spaceh = spaceh_;
         }
 
-        uchar childalign() const
+        uchar childalign() const override final
         {
             return 0;
         }
 
-        void layout()
+        void layout() override final
         {
-            widths.resize(0);
+            widths.clear();
 
             w = subh = 0;
-            loopchildren( [this] (Object * o)
+            for(Object *o : children)
             {
                 o->layout();
                 int cols = o->childcolumns();
@@ -1549,18 +1565,18 @@ namespace UI
                 }
                 w = std::max(w, o->w);
                 subh += o->h;
-            });
+            }
 
             subw = 0;
-            for(int i = 0; i < static_cast<int>(widths.size()); i++)
+            for(const float &i : widths)
             {
-                subw += widths[i];
+                subw += i;
             }
             w = std::max(w, subw + spacew*std::max(static_cast<int>(widths.size()) - 1, 0));
             h = subh + spaceh*std::max(static_cast<int>(children.size()) - 1, 0);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             if(children.empty())
             {
@@ -1572,7 +1588,7 @@ namespace UI
                   cstep = (w - subw) / widths.size(),
                   rspace = (h - subh) / std::max(static_cast<int>(children.size()) - 1, 1),
                   rstep = (h - subh) / children.size();
-            loopchildren([&offsety, &sy, cspace, cstep, rspace, rstep, this] (Object * o)
+            for(Object *o : children)
             {
                 o->x = 0;
                 o->y = offsety;
@@ -1594,11 +1610,11 @@ namespace UI
                     c->adjustlayout(sx, 0, sw, o->h);
                     sx += sw;
                 }
-            });
+            }
         }
     };
 
-    struct Spacer : Object
+    struct Spacer final : Object
     {
         float spacew, spaceh;
 
@@ -1615,33 +1631,33 @@ namespace UI
         {
             return "#Spacer";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
-        void layout()
+        void layout() override final
         {
             w = spacew;
             h = spaceh;
-            loopchildren( [this] (Object * o)
+            for(Object *o : children)
             {
                 o->x = spacew;
                 o->y = spaceh;
                 o->layout();
                 w = std::max(w, o->x + o->w);
                 h = std::max(h, o->y + o->h);
-            });
+            }
             w += spacew;
             h += spaceh;
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             adjustchildrento(spacew, spaceh, w - 2*spacew, h - 2*spaceh);
         }
     };
 
-    struct Offsetter : Object
+    struct Offsetter final : Object
     {
         float offsetx, offsety;
 
@@ -1653,23 +1669,26 @@ namespace UI
         }
 
         static const char *typestr() { return "#Offsetter"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override final
+        {
+            return typestr();
+        }
 
-        void layout()
+        void layout() override final
         {
             Object::layout();
 
-            loopchildren( [this] (Object * o)
+            for(Object *o : children)
             {
                 o->x += offsetx;
                 o->y += offsety;
-            });
+            }
 
             w += offsetx;
             h += offsety;
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             adjustchildrento(offsetx, offsety, w - offsetx, h - offsety);
         }
@@ -1691,12 +1710,12 @@ namespace UI
             return "#Filler";
         }
 
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        void layout()
+        void layout() override final
         {
             Object::layout();
             w = std::max(w, minw);
@@ -1710,11 +1729,11 @@ namespace UI
         {
             return "#Target";
         }
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
-        bool target(float, float) //note unnamed function parameters
+        bool target(float, float) override final //note unnamed function parameters
         {
             return true;
         }
@@ -1741,6 +1760,9 @@ namespace UI
         static void def() { gle::defcolor(4, GL_UNSIGNED_BYTE); }
     };
 
+#undef LOOP_CHILDREN_REV
+#undef LOOP_CHILD_RANGE
+
     struct FillColor : Target
     {
         enum
@@ -1760,15 +1782,18 @@ namespace UI
         }
 
         static const char *typestr() { return "#FillColor"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override
+        {
+            return typestr();
+        }
 
-        void startdraw()
+        void startdraw() override
         {
             hudnotextureshader->set();
             gle::defvertex(2);
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override
         {
             changedraw(Change_Shader | Change_Color | Change_Blend);
             if(type==MODULATE)
@@ -1791,7 +1816,7 @@ namespace UI
         }
     };
 
-    class Gradient : public FillColor
+    class Gradient final : public FillColor
     {
         public:
             enum { VERTICAL, HORIZONTAL };
@@ -1808,9 +1833,12 @@ namespace UI
             static const char *typestr() { return "#Gradient"; }
 
         protected:
-            const char *gettype() const { return typestr(); }
+            const char *gettype() const override final
+            {
+                return typestr();
+            }
 
-            void startdraw()
+            void startdraw() override final
             {
                 hudnotextureshader->set();
                 gle::defvertex(2);
@@ -1820,7 +1848,7 @@ namespace UI
         private:
             Color color2;
 
-            void draw(float sx, float sy)
+            void draw(float sx, float sy) override final
             {
                 changedraw(Change_Shader | Change_Color | Change_Blend);
                 if(type==MODULATE)
@@ -1842,7 +1870,7 @@ namespace UI
             }
     };
 
-    struct Line : Filler
+    struct Line final : Filler
     {
         Color color;
 
@@ -1853,15 +1881,18 @@ namespace UI
         }
 
         static const char *typestr() { return "#Line"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override final
+        {
+            return typestr();
+        }
 
-        void startdraw()
+        void startdraw() override final
         {
             hudnotextureshader->set();
             gle::defvertex(2);
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             changedraw(Change_Shader | Change_Color);
 
@@ -1875,46 +1906,51 @@ namespace UI
         }
     };
 
-    struct Outline : Filler
+    class Outline final : public Filler
     {
-        Color color;
+        public:
 
-        void setup(const Color &color_, float minw_ = 0, float minh_ = 0)
-        {
-            Filler::setup(minw_, minh_);
-            color = color_;
-        }
+            void setup(const Color &color_, float minw_ = 0, float minh_ = 0)
+            {
+                Filler::setup(minw_, minh_);
+                color = color_;
+            }
 
-        static const char *typestr() { return "#Outline"; }
-        const char *gettype() const { return typestr(); }
+            const char *gettype() const override final
+            {
+                return typestr();
+            }
+            static const char *typestr() { return "#Outline"; }
 
-        void startdraw()
-        {
-            hudnotextureshader->set();
-            gle::defvertex(2);
-        }
+            void draw(float sx, float sy) override final
+            {
+                changedraw(Change_Shader | Change_Color);
 
-        void draw(float sx, float sy)
-        {
-            changedraw(Change_Shader | Change_Color);
+                color.init();
+                gle::begin(GL_LINE_LOOP);
+                gle::attribf(sx,   sy);
+                gle::attribf(sx+w, sy);
+                gle::attribf(sx+w, sy+h);
+                gle::attribf(sx,   sy+h);
+                gle::end();
 
-            color.init();
-            gle::begin(GL_LINE_LOOP);
-            gle::attribf(sx,   sy);
-            gle::attribf(sx+w, sy);
-            gle::attribf(sx+w, sy+h);
-            gle::attribf(sx,   sy+h);
-            gle::end();
-
-            Object::draw(sx, sy);
-        }
+                Object::draw(sx, sy);
+            }
+        protected:
+            void startdraw() override final
+            {
+                hudnotextureshader->set();
+                gle::defvertex(2);
+            }
+        private:
+            Color color;
     };
 
     static bool checkalphamask(Texture *tex, float x, float y)
     {
         if(!tex->alphamask)
         {
-            loadalphamask(tex);
+            tex->loadalphamask();
             if(!tex->alphamask)
             {
                 return true;
@@ -1942,23 +1978,26 @@ namespace UI
         }
 
         static const char *typestr() { return "#Image"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override
+        {
+            return typestr();
+        }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override
         {
             return !(tex->type&Texture::ALPHA) || checkalphamask(tex, cx/w, cy/h);
         }
 
-        void startdraw()
+        void startdraw() override final
         {
             lasttex = nullptr;
 
             gle::defvertex(2);
             gle::deftexcoord0();
-            gle::begin(GL_QUADS);
+            gle::begin(GL_TRIANGLE_STRIP);
         }
 
-        void enddraw()
+        void enddraw() override final
         {
             gle::end();
         }
@@ -1966,10 +2005,18 @@ namespace UI
         void bindtex()
         {
             changedraw();
-            if(lasttex != tex) { if(lasttex) gle::end(); lasttex = tex; glBindTexture(GL_TEXTURE_2D, tex->id); }
+            if(lasttex != tex)
+            {
+                if(lasttex)
+                {
+                    gle::end();
+                }
+                lasttex = tex;
+                glBindTexture(GL_TEXTURE_2D, tex->id);
+            }
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override
         {
             if(tex != notexture)
             {
@@ -1983,7 +2030,7 @@ namespace UI
 
     Texture *Image::lasttex = nullptr;
 
-    struct CroppedImage : Image
+    struct CroppedImage final : Image
     {
         public:
             void setup(Texture *tex_, float minw_ = 0, float minh_ = 0, float cropx_ = 0, float cropy_ = 0, float cropw_ = 1, float croph_ = 1)
@@ -1998,12 +2045,12 @@ namespace UI
             static const char *typestr() { return "#CroppedImage"; }
 
         private:
-            bool target(float cx, float cy)
+            bool target(float cx, float cy) override final
             {
                 return !(tex->type&Texture::ALPHA) || checkalphamask(tex, cropx + cx/w*cropw, cropy + cy/h*croph);
             }
 
-            void draw(float sx, float sy)
+            void draw(float sx, float sy) override final
             {
                 if(tex == notexture)
                 {
@@ -2017,17 +2064,23 @@ namespace UI
                 Object::draw(sx, sy);
             }
 
-            const char *gettype() const { return typestr(); }
+            const char *gettype() const override final
+            {
+                return typestr();
+            }
 
             float cropx, cropy, cropw, croph;
     };
 
-    struct StretchedImage : Image
+    struct StretchedImage final : Image
     {
         static const char *typestr() { return "#StretchedImage"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override final
+        {
+            return typestr();
+        }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override final
         {
             if(!(tex->type&Texture::ALPHA))
             {
@@ -2070,7 +2123,7 @@ namespace UI
             return checkalphamask(tex, mx, my);
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             if(tex == notexture)
             {
@@ -2172,7 +2225,7 @@ namespace UI
         }
     };
 
-    struct BorderedImage : Image
+    struct BorderedImage final : Image
     {
         float texborder, screenborder;
 
@@ -2184,9 +2237,12 @@ namespace UI
         }
 
         static const char *typestr() { return "#BorderedImage"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const  override final
+        {
+            return typestr();
+        }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override final
         {
             if(!(tex->type&Texture::ALPHA))
             {
@@ -2220,7 +2276,7 @@ namespace UI
             return checkalphamask(tex, mx, my);
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             if(tex == notexture)
             {
@@ -2296,7 +2352,7 @@ namespace UI
         }
     };
 
-    struct TiledImage : Image
+    struct TiledImage final : Image
     {
         float tilew, tileh;
 
@@ -2312,12 +2368,12 @@ namespace UI
             return "#TiledImage";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override final
         {
             if(!(tex->type&Texture::ALPHA))
             {
@@ -2327,7 +2383,7 @@ namespace UI
             return checkalphamask(tex, std::fmod(cx/tilew, 1), std::fmod(cy/tileh, 1));
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             if(tex == notexture)
             {
@@ -2375,14 +2431,14 @@ namespace UI
             type = type_;
         }
 
-        void startdraw()
+        void startdraw() override final
         {
             hudnotextureshader->set();
             gle::defvertex(2);
         }
     };
 
-    struct Triangle : Shape
+    struct Triangle final : Shape
     {
         vec2 a, b, c;
 
@@ -2411,12 +2467,12 @@ namespace UI
         {
             return "#Triangle";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override final
         {
             if(type == OUTLINE)
             {
@@ -2427,7 +2483,7 @@ namespace UI
                    (vec2(cx, cy).sub(a).cross(vec2(c).sub(a)) < 0) == side;
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             Object::draw(sx, sy);
 
@@ -2449,7 +2505,7 @@ namespace UI
         }
     };
 
-    struct Circle : Shape
+    struct Circle final : Shape
     {
         float radius;
 
@@ -2461,9 +2517,12 @@ namespace UI
         }
 
         static const char *typestr() { return "#Circle"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const  override final
+        {
+            return typestr();
+        }
 
-        bool target(float cx, float cy)
+        bool target(float cx, float cy) override final
         {
             if(type == OUTLINE)
             {
@@ -2473,7 +2532,7 @@ namespace UI
             return vec2(cx, cy).sub(r).squaredlen() <= r*r;
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             Object::draw(sx, sy);
 
@@ -2518,17 +2577,21 @@ namespace UI
     VARP(uitextrows, 1, 24, 200);
     FVAR(uitextscale, 1, 0, 0);
 
-    #define SETSTR(dst, src) do { \
-        if(dst) \
-        { \
-            if(dst != src && std::strcmp(dst, src)) \
-            { \
-                delete[] dst; \
-                dst = newstring(src); \
-            } \
-        } \
-        else dst = newstring(src); \
-    } while(0)
+    static void setstring(char*& dst, const char* src)
+    {
+        if(dst)
+        {
+            if(dst != src && std::strcmp(dst, src))
+            {
+                delete[] dst;
+                dst = newstring(src);
+            }
+        }
+        else
+        {
+            dst = newstring(src);
+        }
+    }
 
     struct Text : Object
     {
@@ -2549,12 +2612,12 @@ namespace UI
             }
 
         protected:
-            const char *gettype() const
+            const char *gettype() const override
             {
                 return typestr();
             }
 
-            void draw(float sx, float sy)
+            void draw(float sx, float sy) override final
             {
                 Object::draw(sx, sy);
 
@@ -2562,16 +2625,22 @@ namespace UI
 
                 float oldscale = textscale;
                 textscale = drawscale();
-                draw_text(getstr(), sx/textscale, sy/textscale, color.r, color.g, color.b, color.a, -1, wrap >= 0 ? static_cast<int>(wrap/textscale) : -1);
+                ttr.fontsize(36);
+                const float conscalefactor = 0.000666;
+                pushhudscale(conscalefactor);
+                ttr.renderttf(getstr(), {color.r, color.g, color.b, color.a}, sx*1500, sy*1500, scale*33);
+                pophudmatrix();
+                //draw_text(getstr(), sx/textscale, sy/textscale, 0, color.g, color.b, color.a, -1, wrap >= 0 ? static_cast<int>(wrap/textscale) : -1);
+
                 textscale = oldscale;
             }
 
-            void layout()
+            void layout() override final
             {
                 Object::layout();
 
                 float k = drawscale(), tw, th;
-                text_boundsf(getstr(), tw, th, wrap >= 0 ? static_cast<int>(wrap/k) : -1);
+                ttr.ttfbounds(getstr(), tw, th, 42);
                 w = std::max(w, tw*k);
                 h = std::max(h, th*k);
             }
@@ -2592,18 +2661,24 @@ namespace UI
 
     };
 
-    struct TextString : Text
+    struct TextString final : Text
     {
         char *str;
 
-        TextString() : str(nullptr) {}
-        ~TextString() { delete[] str; }
+        TextString() : str(nullptr)
+        {
+        }
+
+        ~TextString()
+        {
+            delete[] str;
+        }
 
         void setup(const char *str_, float scale_ = 1, const Color &color_ = Color(255, 255, 255), float wrap_ = -1)
         {
             Text::setup(scale_, color_, wrap_);
 
-            SETSTR(str, str_);
+            setstring(str, str_);
         }
 
         static const char *typestr()
@@ -2611,18 +2686,18 @@ namespace UI
             return "#TextString";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        const char *getstr() const
+        const char *getstr() const override final
         {
             return str;
         }
     };
 
-    struct TextInt : Text
+    struct TextInt final : Text
     {
         int val;
         char str[20];
@@ -2645,23 +2720,23 @@ namespace UI
             return "#TextInt";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        const char *getstr() const
+        const char *getstr() const override final
         {
             return str;
         }
     };
 
-    struct TextFloat : Text
+    struct TextFloat final : Text
     {
         float val;
         char str[20];
 
-        TextFloat() : val(0) { memcpy(str, "0.0", 4); }
+        TextFloat() : val(0) { std::memcpy(str, "0.0", 4); }
 
         void setup(float val_, float scale_ = 1, const Color &color_ = Color(255, 255, 255), float wrap_ = -1)
         {
@@ -2679,18 +2754,18 @@ namespace UI
             return "#TextFloat";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        const char *getstr() const
+        const char *getstr() const override final
         {
             return str;
         }
     };
 
-    struct Font : Object
+    struct Font final : Object
     {
         ::font *font;
 
@@ -2699,14 +2774,9 @@ namespace UI
         void setup(const char *name)
         {
             Object::setup();
-
-            if(!font || !std::strcmp(font->name, name))
-            {
-                font = findfont(name);
-            }
         }
 
-        void layout()
+        void layout() override final
         {
             pushfont();
             setfont(font);
@@ -2714,7 +2784,7 @@ namespace UI
             popfont();
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             pushfont();
             setfont(font);
@@ -2731,7 +2801,7 @@ namespace UI
         }
 
         #define DOSTATE(flags, func) \
-            void func##children(float cx, float cy, int mask, bool inside, int setflags) \
+            void func##children(float cx, float cy, int mask, bool inside, int setflags) override final \
             { \
                 pushfont(); \
                 setfont(font); \
@@ -2741,7 +2811,7 @@ namespace UI
         DOSTATES
         #undef DOSTATE
 
-        bool rawkey(int code, bool isdown)
+        bool rawkey(int code, bool isdown) override final
         {
             pushfont();
             setfont(font);
@@ -2750,7 +2820,7 @@ namespace UI
             return result;
         }
 
-        bool key(int code, bool isdown)
+        bool key(int code, bool isdown) override final
         {
             pushfont();
             setfont(font);
@@ -2759,7 +2829,7 @@ namespace UI
             return result;
         }
 
-        bool textinput(const char *str, int len)
+        bool textinput(const char *str, int len) override final
         {
             pushfont();
             setfont(font);
@@ -2775,9 +2845,8 @@ namespace UI
     {
         floatret(FONTH*uicontextscale);
     }
-    COMMANDN(uicontextscale, uicontextscalecmd, "");
 
-    struct Console : Filler
+    struct Console final : Filler
     {
         void setup(float minw_ = 0, float minh_ = 0)
         {
@@ -2789,7 +2858,7 @@ namespace UI
             return "#Console";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -2799,7 +2868,7 @@ namespace UI
             return uicontextscale;
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             Object::draw(sx, sy);
 
@@ -2829,12 +2898,12 @@ namespace UI
             return "#Clipper";
         }
 
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        void layout()
+        void layout() override
         {
             Object::layout();
 
@@ -2850,12 +2919,12 @@ namespace UI
             }
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             adjustchildrento(0, 0, virtw, virth);
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override
         {
             if((clipw && virtw > clipw) || (cliph && virth > cliph))
             {
@@ -2872,7 +2941,7 @@ namespace UI
         }
     };
 
-    struct Scroller : Clipper
+    struct Scroller final : Clipper
     {
         float offsetx, offsety;
 
@@ -2888,12 +2957,12 @@ namespace UI
             return "#Scroller";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void layout()
+        void layout() override final
         {
             Clipper::layout();
             offsetx = std::min(offsetx, hlimit());
@@ -2901,7 +2970,7 @@ namespace UI
         }
 
         #define DOSTATE(flags, func) \
-            void func##children(float cx, float cy, int mask, bool inside, int setflags) \
+            void func##children(float cx, float cy, int mask, bool inside, int setflags) override final \
             { \
                 cx += offsetx; \
                 cy += offsety; \
@@ -2913,7 +2982,7 @@ namespace UI
         DOSTATES
         #undef DOSTATE
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             if((clipw && virtw > clipw) || (cliph && virth > cliph))
             {
@@ -2979,19 +3048,19 @@ namespace UI
             offsety = std::clamp(vscroll, 0.0f, vlimit());
         }
 
-        void scrollup(float cx, float cy);
+        void scrollup(float cx, float cy) override final;
 
-        void scrolldown(float cx, float cy);
+        void scrolldown(float cx, float cy) override final;
     };
 
-    struct ScrollButton : Object
+    struct ScrollButton final : Object
     {
         static const char *typestr()
         {
             return "#ScrollButton";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -3008,7 +3077,7 @@ namespace UI
                 return "#ScrollBar";
             }
 
-            void hold(float cx, float cy)
+            void hold(float cx, float cy) override final
             {
                 ScrollButton *button = static_cast<ScrollButton *>(find(ScrollButton::typestr(), false));
                 if(button && button->haschildstate(State_Hold))
@@ -3017,7 +3086,7 @@ namespace UI
                 }
             }
 
-            void press(float cx, float cy)
+            void press(float cx, float cy) override final
             {
                 ScrollButton *button = static_cast<ScrollButton *>(find(ScrollButton::typestr(), false));
                 if(button && button->haschildstate(State_Press))
@@ -3042,17 +3111,17 @@ namespace UI
             }
 
         protected:
-            const char *gettype() const
+            const char *gettype() const override
             {
                 return typestr();
             }
 
-            const char *gettypename() const
+            const char *gettypename() const override final
             {
                 return typestr();
             }
 
-            bool target(float, float) //note unnamed function parameters
+            bool target(float, float) override final //note unnamed function parameters
             {
                 return true;
             }
@@ -3107,12 +3176,12 @@ namespace UI
             return "#ScrollArrow";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void hold(float, float) //note unnamed function parameters
+        void hold(float, float) override final //note unnamed function parameters
         {
             ScrollBar *scrollbar = static_cast<ScrollBar *>(findsibling(ScrollBar::typestr()));
             if(scrollbar)
@@ -3133,24 +3202,24 @@ namespace UI
         }
     }
 
-    struct HorizontalScrollBar : ScrollBar
+    struct HorizontalScrollBar final : ScrollBar
     {
         static const char *typestr()
         {
             return "#HorizontalScrollBar";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void addscroll(Scroller *scroller, float dir)
+        void addscroll(Scroller *scroller, float dir) override final
         {
             scroller->addhscroll(dir);
         }
 
-        void scrollto(float cx, float, bool closest = false) //note unnamed function parameter
+        void scrollto(float cx, float, bool closest = false) override final //note unnamed function parameter
         {
             Scroller *scroller = static_cast<Scroller *>(findsibling(Scroller::typestr()));
             if(!scroller)
@@ -3167,7 +3236,7 @@ namespace UI
             scroller->sethscroll(offset*scroller->virtw);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             Scroller *scroller = static_cast<Scroller *>(findsibling(Scroller::typestr()));
             if(!scroller)
@@ -3188,30 +3257,30 @@ namespace UI
             ScrollBar::adjustchildren();
         }
 
-        void movebutton(Object *o, float fromx, float, float tox, float toy) //note unnamed function parameter
+        void movebutton(Object *o, float fromx, float, float tox, float toy) override final //note unnamed function parameter
         {
             scrollto(o->x + tox - fromx, o->y + toy);
         }
     };
 
-    struct VerticalScrollBar : ScrollBar
+    struct VerticalScrollBar final : ScrollBar
     {
         static const char *typestr()
         {
             return "#VerticalScrollBar";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void addscroll(Scroller *scroller, float dir)
+        void addscroll(Scroller *scroller, float dir) override final
         {
             scroller->addvscroll(dir);
         }
 
-        void scrollto(float, float cy, bool closest = false) //note unnamed function parameter
+        void scrollto(float, float cy, bool closest = false) override final //note unnamed function parameter
         {
             Scroller *scroller = static_cast<Scroller *>(findsibling(Scroller::typestr()));
             if(!scroller)
@@ -3228,7 +3297,7 @@ namespace UI
             scroller->setvscroll(offset*scroller->virth);
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             Scroller *scroller = static_cast<Scroller *>(findsibling(Scroller::typestr()));
             if(!scroller)
@@ -3249,24 +3318,24 @@ namespace UI
             ScrollBar::adjustchildren();
         }
 
-        void movebutton(Object *o, float, float fromy, float tox, float toy) //note unnamed function parameter
+        void movebutton(Object *o, float, float fromy, float tox, float toy) override final //note unnamed function parameter
         {
             scrollto(o->x + tox, o->y + toy - fromy);
         }
 
-        int wheelscrolldirection() const
+        int wheelscrolldirection() const override final
         {
             return -1;
         }
     };
 
-    struct SliderButton : Object
+    struct SliderButton final : Object
     {
         static const char *typestr()
         {
             return "#SliderButton";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
@@ -3399,17 +3468,17 @@ namespace UI
             return "#Slider";
         }
 
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        const char *gettypename() const
+        const char *gettypename() const override final
         {
             return typestr();
         }
 
-        bool target(float, float) //note unnamed function parameters
+        bool target(float, float) override final //note unnamed function parameters
         {
             return true;
         }
@@ -3432,19 +3501,19 @@ namespace UI
             return 1;
         }
 
-        void scrollup(float, float) //note unnamed function parameters
+        void scrollup(float, float) override final //note unnamed function parameters
         {
             wheelscroll(-wheelscrolldirection());
         }
 
-        void scrolldown(float, float) //note unnamed function parameters
+        void scrolldown(float, float) override final //note unnamed function parameters
         {
             wheelscroll(wheelscrolldirection());
         }
 
         virtual void scrollto(float, float) {} //note unnamed function parameters
 
-        void hold(float cx, float cy)
+        void hold(float cx, float cy) override final
         {
             scrollto(cx, cy);
         }
@@ -3458,7 +3527,7 @@ namespace UI
 
     VARP(uislidersteptime, 0, 50, 1000);
 
-    struct SliderArrow : Object
+    struct SliderArrow final : Object
     {
         double stepdir;
         int laststep;
@@ -3476,12 +3545,12 @@ namespace UI
             return "#SliderArrow";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void press(float, float) //note unnamed function parameters
+        void press(float, float) override final //note unnamed function parameters
         {
             laststep = totalmillis + 2*uislidersteptime;
 
@@ -3492,7 +3561,7 @@ namespace UI
             }
         }
 
-        void hold(float, float) //note unnamed function parameters
+        void hold(float, float) override final //note unnamed function parameters
         {
             if(totalmillis < laststep + uislidersteptime)
             {
@@ -3518,19 +3587,19 @@ namespace UI
         arrowscroll(step);
     }
 
-    struct HorizontalSlider : Slider
+    struct HorizontalSlider final : Slider
     {
         static const char *typestr()
         {
             return "#HorizontalSlider";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void scrollto(float cx, float) //note unnamed function parameter
+        void scrollto(float cx, float) override final //note unnamed function parameter
         {
             SliderButton *button = static_cast<SliderButton *>(find(SliderButton::typestr(), false));
             if(!button)
@@ -3546,7 +3615,7 @@ namespace UI
             }
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             SliderButton *button = static_cast<SliderButton *>(find(SliderButton::typestr(), false));
             if(!button)
@@ -3565,19 +3634,19 @@ namespace UI
         }
     };
 
-    struct VerticalSlider : Slider
+    struct VerticalSlider final : Slider
     {
         static const char *typestr()
         {
             return "#VerticalSlider";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void scrollto(float, float cy) //note unnamed function parameter
+        void scrollto(float, float cy) override final //note unnamed function parameter
         {
             SliderButton *button = static_cast<SliderButton *>(find(SliderButton::typestr(), false));
             if(!button)
@@ -3593,7 +3662,7 @@ namespace UI
             }
         }
 
-        void adjustchildren()
+        void adjustchildren() override final
         {
             SliderButton *button = static_cast<SliderButton *>(find(SliderButton::typestr(), false));
             if(!button)
@@ -3611,7 +3680,10 @@ namespace UI
             Slider::adjustchildren();
         }
 
-        int wheelscrolldirection() const { return -1; }
+        int wheelscrolldirection() const override final
+        {
+            return -1;
+        }
     };
 
     struct TextEditor : Object
@@ -3660,7 +3732,7 @@ namespace UI
             scale = scale_;
             if(keyfilter_)
             {
-                SETSTR(keyfilter, keyfilter_);
+                setstring(keyfilter, keyfilter_);
             }
             else
             {
@@ -3709,12 +3781,12 @@ namespace UI
             return "#TextEditor";
         }
 
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        bool target(float, float) //note unnamed function parameters
+        bool target(float, float) override final//note unnamed function parameters
         {
             return true;
         }
@@ -3724,7 +3796,7 @@ namespace UI
             return scale / FONTH;
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             changedraw(Change_Shader | Change_Color);
 
@@ -3740,7 +3812,7 @@ namespace UI
             Object::draw(sx, sy);
         }
 
-        void layout()
+        void layout() override final
         {
             Object::layout();
 
@@ -3756,13 +3828,13 @@ namespace UI
             offsety = cy;
         }
 
-        void press(float cx, float cy)
+        void press(float cx, float cy) override final
         {
             setfocus();
             resetmark(cx, cy);
         }
 
-        void hold(float cx, float cy)
+        void hold(float cx, float cy) override final
         {
             if(isfocus())
             {
@@ -3772,12 +3844,12 @@ namespace UI
             }
         }
 
-        void scrollup(float, float) //note unnamed function parameters
+        void scrollup(float, float) override final //note unnamed function parameters
         {
             edit->scrollup();
         }
 
-        void scrolldown(float, float) //note unnamed function parameters
+        void scrolldown(float, float) override final //note unnamed function parameters
         {
             edit->scrolldown();
         }
@@ -3792,7 +3864,7 @@ namespace UI
             clearfocus();
         }
 
-        bool key(int code, bool isdown)
+        bool key(int code, bool isdown) override final
         {
             if(Object::key(code, isdown))
             {
@@ -3820,7 +3892,6 @@ namespace UI
                         break;
                     }
                 }
-                [[fallthrough]];
                 case SDLK_KP_ENTER:
                 {
                     if(isdown)
@@ -3842,7 +3913,7 @@ namespace UI
             return true;
         }
 
-        bool textinput(const char *str, int len)
+        bool textinput(const char *str, int len) override final
         {
             if(Object::textinput(str, len))
             {
@@ -3986,36 +4057,36 @@ namespace UI
         {
             return "#Field";
         }
-        const char *gettype() const
+        const char *gettype() const override
         {
             return typestr();
         }
 
-        void commit()
+        void commit() override final
         {
             TextEditor::commit();
             changed = true;
         }
 
-        void cancel()
+        void cancel() override final
         {
             TextEditor::cancel();
             changed = false;
         }
     };
 
-    struct KeyField : Field
+    struct KeyField final : Field
     {
         static const char *typestr()
         {
             return "#KeyField";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void resetmark(float cx, float cy)
+        void resetmark(float cx, float cy) override final
         {
             edit->clear();
             Field::resetmark(cx, cy);
@@ -4034,7 +4105,7 @@ namespace UI
             }
         }
 
-        bool rawkey(int code, bool isdown)
+        bool rawkey(int code, bool isdown) override final
         {
             if(Object::rawkey(code, isdown))
             {
@@ -4055,7 +4126,7 @@ namespace UI
             return true;
         }
 
-        bool allowtextinput() const
+        bool allowtextinput() const override final
         {
             return false;
         }
@@ -4063,7 +4134,7 @@ namespace UI
 
     struct Preview : Target
     {
-        void startdraw()
+        void startdraw() override final
         {
             glDisable(GL_BLEND);
 
@@ -4073,7 +4144,7 @@ namespace UI
             }
         }
 
-        void enddraw()
+        void enddraw() override final
         {
             glEnable(GL_BLEND);
 
@@ -4084,7 +4155,7 @@ namespace UI
         }
     };
 
-    struct ModelPreview : Preview
+    struct ModelPreview final : Preview
     {
         char *name;
         int anim;
@@ -4095,7 +4166,7 @@ namespace UI
         void setup(const char *name_, const char *animspec, float minw_, float minh_)
         {
             Preview::setup(minw_, minh_);
-            SETSTR(name, name_);
+            setstring(name, name_);
 
             anim = Anim_All;
             if(animspec[0])
@@ -4114,7 +4185,7 @@ namespace UI
                 }
                 else
                 {
-                    std::vector<int> anims = findanims(animspec);
+                    std::vector<size_t> anims = findanims(animspec);
                     if(anims.size())
                     {
                         anim = anims[0];
@@ -4128,12 +4199,12 @@ namespace UI
         {
             return "#ModelPreview";
         }
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             Object::draw(sx, sy);
 
@@ -4141,7 +4212,7 @@ namespace UI
 
             int sx1, sy1, sx2, sy2;
             window->calcscissor(sx, sy, sx+w, sy+h, sx1, sy1, sx2, sy2, false);
-            modelpreview::start(sx1, sy1, sx2-sx1, sy2-sy1, false, clipstack.size() > 0);
+            modelpreview.start(sx1, sy1, sx2-sx1, sy2-sy1, false, clipstack.size() > 0);
             model *m = loadmodel(name);
             if(m)
             {
@@ -4155,46 +4226,56 @@ namespace UI
             {
                 clipstack.back().scissor();
             }
-            modelpreview::end();
+            modelpreview.end();
         }
     };
 
-    struct PrefabPreview : Preview
+    class PrefabPreview final : public Preview
     {
-        char *name;
-        vec color;
-
-        PrefabPreview() : name(nullptr) {}
-        ~PrefabPreview() { delete[] name; }
-
-        void setup(const char *name_, int color_, float minw_, float minh_)
-        {
-            Preview::setup(minw_, minh_);
-            SETSTR(name, name_);
-            color = vec::hexcolor(color_);
-        }
-
-        static const char *typestr()
-        {
-            return "#PrefabPreview";
-        }
-
-        const char *gettype() const { return typestr(); }
-
-        void draw(float sx, float sy)
-        {
-            Object::draw(sx, sy);
-            changedraw(Change_Shader);
-            int sx1, sy1, sx2, sy2;
-            window->calcscissor(sx, sy, sx+w, sy+h, sx1, sy1, sx2, sy2, false);
-            modelpreview::start(sx1, sy1, sx2-sx1, sy2-sy1, false, clipstack.size() > 0);
-            previewprefab(name, color);
-            if(clipstack.size())
+        public:
+            PrefabPreview() : name(nullptr)
             {
-                clipstack.back().scissor();
             }
-            modelpreview::end();
-        }
+
+            ~PrefabPreview()
+            {
+                delete[] name;
+            }
+
+            void setup(const char *name_, int color_, float minw_, float minh_)
+            {
+                Preview::setup(minw_, minh_);
+                setstring(name, name_);
+                color = vec::hexcolor(color_);
+            }
+
+            static const char *typestr()
+            {
+                return "#PrefabPreview";
+            }
+
+            const char *gettype() const override final
+            {
+                return typestr();
+            }
+
+            void draw(float sx, float sy) override final
+            {
+                Object::draw(sx, sy);
+                changedraw(Change_Shader);
+                int sx1, sy1, sx2, sy2;
+                window->calcscissor(sx, sy, sx+w, sy+h, sx1, sy1, sx2, sy2, false);
+                modelpreview.start(sx1, sy1, sx2-sx1, sy2-sy1, false, clipstack.size() > 0);
+                previewprefab(name, color);
+                if(clipstack.size())
+                {
+                    clipstack.back().scissor();
+                }
+                modelpreview.end();
+            }
+        private:
+            char *name;
+            vec color;
     };
 
     VARP(uislotviewtime, 0, 25, 1000);
@@ -4211,7 +4292,10 @@ namespace UI
         }
 
         static const char *typestr() { return "#SlotViewer"; }
-        const char *gettype() const { return typestr(); }
+        const char *gettype() const override
+        {
+            return typestr();
+        }
 
         void previewslot(Slot &slot, VSlot &vslot, float x, float y)
         {
@@ -4231,7 +4315,7 @@ namespace UI
                 Slot &slot = *vslot.slot;
                 if(slot.texmask&(1 << Tex_Glow))
                 {
-                    for(int j = 0; j < slot.sts.length(); j++)
+                    for(uint j = 0; j < slot.sts.size(); j++)
                     {
                         if(slot.sts[j].type == Tex_Glow)
                         {
@@ -4320,7 +4404,7 @@ namespace UI
             }
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override
         {
             Slot &slot = lookupslot(index, false);
             previewslot(slot, *slot.variants, sx, sy);
@@ -4329,19 +4413,19 @@ namespace UI
         }
     };
 
-    struct VSlotViewer : SlotViewer
+    struct VSlotViewer final : SlotViewer
     {
         static const char *typestr()
         {
             return "#VSlotViewer";
         }
 
-        const char *gettype() const
+        const char *gettype() const override final
         {
             return typestr();
         }
 
-        void draw(float sx, float sy)
+        void draw(float sx, float sy) override final
         {
             VSlot &vslot = lookupvslot(index, false);
             previewslot(*vslot.slot, vslot, sx, sy);
@@ -4350,22 +4434,24 @@ namespace UI
         }
     };
 
+    //new ui command
     void newui(char *name, char *contents, char *onshow, char *onhide)
     {
-        Window *window = windows.find(name, nullptr);
-        if(window)
+        auto itr = windows.find(name);
+        if(itr != windows.end())
         {
-            if (window == UI::window)
+            if((*itr).second == UI::window)
             {
                 return;
             }
-            world->hide(window); windows.remove(name);
+            world->hide((*itr).second);
+            windows.erase(itr);
             delete window;
         }
         windows[name] = new Window(name, contents, onshow, onhide);
     }
-    COMMAND(newui, "ssss");
 
+    //command
     void uiallowinput(int *val)
     {
         if(window)
@@ -4377,8 +4463,8 @@ namespace UI
             intret(window->allowinput ? 1 : 0);
         }
     }
-    COMMAND(uiallowinput, "b");
 
+    //command
     void uieschide (int *val)
     {
         if(window)
@@ -4390,12 +4476,11 @@ namespace UI
             }
         }
     }
-    COMMAND(uieschide, "b");
 
     bool showui(const char *name)
     {
-        Window *window = windows.find(name, nullptr);
-        return window && world->show(window);
+        auto itr = windows.find(name);
+        return (itr != windows.end()) && world->show((*itr).second);
     }
 
     bool hideui(const char *name)
@@ -4404,8 +4489,8 @@ namespace UI
         {
             return world->hideall() > 0;
         }
-        Window *window = windows.find(name, nullptr);
-        return window && world->hide(window);
+        auto itr = windows.find(name);
+        return (itr != windows.end()) && world->hide((*itr).second);
     }
 
     bool toggleui(const char *name)
@@ -4436,51 +4521,12 @@ namespace UI
         {
             return world->children.size() > 0;
         }
-        Window *window = windows.find(name, nullptr);
-        return window && std::find(world->children.begin(), world->children.end(), window) != world->children.end();
-    }
-
-    void showuicmd(char * name)
-    {
-        intret(showui(name) ? 1 : 0);
-    }
-
-    void hideuicmd(char * name)
-    {
-        intret(hideui(name) ? 1 : 0);
-    }
-
-    void hidetopuicmd()
-    {
-        intret(world->hidetop() ? 1 : 0);
-    }
-
-    void hidealluicmd()
-    {
-        intret(world->hideall());
-    }
-
-    void toggleuicmd(char * name)
-    {
-        intret(toggleui(name) ? 1 : 0);
-    }
-
-    void holduicmd(char * name, int * down)
-    {
-        holdui(name, *down!=0);
-    }
-
-    void uivisiblecmd(char * name)
-    {
-        intret(uivisible(name) ? 1 : 0);
-    }
-
-    void uinamecmd()
-    {
-        if(window)
+        auto itr = windows.find(name);
+        if(itr != windows.end() && (*itr).second)
         {
-            result(window->name);
+            return std::find(world->children.begin(), world->children.end(), (*itr).second) != world->children.end();
         }
+        return false;
     }
 
     void ifstateval(bool state, tagval * t, tagval * f)
@@ -4506,17 +4552,6 @@ namespace UI
         }
     }
 
-    template<class T>
-    void buildobject( std::function<void(T)> func, uint * contents)
-    {
-        if(buildparent)
-        {
-            T *o = buildparent->buildtype<T>();
-            func(*o);
-            o->buildchildren(contents);
-        }
-    }
-
     static float parsepixeloffset(const tagval *t, int size)
     {
         switch(t->type)
@@ -4537,7 +4572,7 @@ namespace UI
             {
                 const char *s = t->getstr();
                 char *end;
-                float val = strtod(s, &end);
+                float val = std::strtod(s, &end);
                 return *end == 'p' ? val/size : val;
             }
         }
@@ -4572,7 +4607,6 @@ namespace UI
                     break;
                 }
             }
-            [[fallthrough]];
             default:
             {
                 BUILD(Object, o, o->setup(), children);
@@ -4583,22 +4617,63 @@ namespace UI
 
     void inituicmds()
     {
-        addcommand("showui",        reinterpret_cast<identfun>(showuicmd),   "s",    Id_Command);
-        addcommand("hideui",        reinterpret_cast<identfun>(hideuicmd),   "s",    Id_Command);
-        addcommand("hidetopui",     reinterpret_cast<identfun>(hidetopuicmd),"",     Id_Command);
-        addcommand("hideallui",     reinterpret_cast<identfun>(hidealluicmd),"",     Id_Command);
-        addcommand("toggleui",      reinterpret_cast<identfun>(toggleuicmd), "s",    Id_Command);
-        addcommand("holdui",        reinterpret_cast<identfun>(holduicmd),   "sD",   Id_Command);
-        addcommand("uivisiblecmd",  reinterpret_cast<identfun>(uivisible),   "s",    Id_Command);
-        addcommand("uiname",        reinterpret_cast<identfun>(uinamecmd),   "",     Id_Command);
+
+        static auto showuicmd = [] (char * name)
+        {
+            intret(showui(name) ? 1 : 0);
+        };
+
+        static auto hideuicmd = [] (char * name)
+        {
+            intret(hideui(name) ? 1 : 0);
+        };
+
+        static auto hidetopuicmd = [] ()
+        {
+            intret(world->hidetop() ? 1 : 0);
+        };
+
+        static auto hidealluicmd = [] ()
+        {
+            intret(world->hideall());
+        };
+
+        static auto toggleuicmd = [] (char * name)
+        {
+            intret(toggleui(name) ? 1 : 0);
+        };
+
+        static auto holduicmd = [] (char * name, int * down)
+        {
+            holdui(name, *down!=0);
+        };
+
+        static auto uivisiblecmd = [] (char * name)
+        {
+            intret(uivisible(name) ? 1 : 0);
+        };
+
+        addcommand("showui",        reinterpret_cast<identfun>(+showuicmd),   "s",    Id_Command);
+        addcommand("hideui",        reinterpret_cast<identfun>(+hideuicmd),   "s",    Id_Command);
+        addcommand("hidetopui",     reinterpret_cast<identfun>(+hidetopuicmd),"",     Id_Command);
+        addcommand("hideallui",     reinterpret_cast<identfun>(+hidealluicmd),"",     Id_Command);
+        addcommand("toggleui",      reinterpret_cast<identfun>(+toggleuicmd), "s",    Id_Command);
+        addcommand("holdui",        reinterpret_cast<identfun>(+holduicmd),   "sD",   Id_Command);
+        addcommand("uivisible",     reinterpret_cast<identfun>(+uivisiblecmd),"s",    Id_Command);
+
+        static auto uinamecmd = [] ()
+        {
+            if(window)
+            {
+                result(window->name);
+            }
+        };
+        addcommand("uiname",        reinterpret_cast<identfun>(+uinamecmd),   "",     Id_Command);
 
         #define DOSTATE(flags, func) \
             addcommand("ui" #func, reinterpret_cast<identfun>(+[] (uint *t, uint *f) { executeret(buildparent && buildparent->haschildstate(flags) ? t : f); }), "ee", Id_Command); \
-            addcommand("ui!" #func "?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && buildparent->hasstate(flags), t, f); }), "tt", Id_Command); \
             addcommand("ui" #func "?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && buildparent->haschildstate(flags), t, f); }), "tt", Id_Command); \
-            addcommand("ui!" #func "+", reinterpret_cast<identfun>(+[] (uint *t, uint *f) { executeret(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && buildparent->children[buildchild]->hasstate(flags) ? t : f); }), "ee", Id_Command); \
             addcommand("ui" #func "+", reinterpret_cast<identfun>(+[] (uint *t, uint *f) { executeret(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && buildparent->children[buildchild]->haschildstate(flags) ? t : f); }), "ee", Id_Command); \
-            addcommand("ui!" #func "+?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && buildparent->children[buildchild]->hasstate(flags), t, f); }), "tt", Id_Command); \
             addcommand("ui" #func "+?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && buildparent->children[buildchild]->haschildstate(flags), t, f); }), "tt", Id_Command);
         DOSTATES
         #undef DOSTATE
@@ -4607,9 +4682,36 @@ namespace UI
         addcommand("uifocus?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && TextEditor::focus == buildparent, t, f); }), "tt", Id_Command);
         addcommand("uifocus+", reinterpret_cast<identfun>(+[] (uint *t, uint *f) { executeret(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && TextEditor::focus == buildparent->children[buildchild] ? t : f); }), "ee", Id_Command);
         addcommand("uifocus+?", reinterpret_cast<identfun>(+[] (tagval *t, tagval *f) { ifstateval(buildparent && static_cast<int>(buildparent->children.size()) > buildchild && TextEditor::focus == buildparent->children[buildchild], t, f); }), "tt", Id_Command);
-        addcommand("uialign", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign) { { if(buildparent) { buildparent->setalign(*xalign, *yalign); } }; }), "ii", Id_Command);
-        addcommand("uialign-", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign) { { if(buildparent && buildchild > 0) { buildparent->children[buildchild-1]->setalign(*xalign, *yalign); } }; }), "ii", Id_Command);
-        addcommand("uialign*", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign) { { if(buildparent) { for(int i = 0; i < buildchild; ++i) { buildparent->children[i]->setalign(*xalign, *yalign); } } }; }), "ii", Id_Command);
+        addcommand("uialign", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign)
+        {
+            {
+                if(buildparent)
+                {
+                    buildparent->setalign(*xalign, *yalign);
+                }
+            };
+        }), "ii", Id_Command);
+        addcommand("uialign-", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign)
+        {
+            {
+                if(buildparent && buildchild > 0)
+                {
+                    buildparent->children[buildchild-1]->setalign(*xalign, *yalign);
+                }
+            };
+        }), "ii", Id_Command);
+        addcommand("uialign*", reinterpret_cast<identfun>(+[] (int *xalign, int *yalign)
+        {
+            {
+                if(buildparent)
+                {
+                    for(int i = 0; i < buildchild; ++i)
+                    {
+                        buildparent->children[i]->setalign(*xalign, *yalign);
+                    }
+                }
+            };
+        }), "ii", Id_Command);
         addcommand("uiclamp", reinterpret_cast<identfun>(+[] (int *left, int *right, int *top, int *bottom) { { if(buildparent) { buildparent->setclamp(*left, *right, *top, *bottom); } }; }), "iiii", Id_Command);
         addcommand("uiclamp-", reinterpret_cast<identfun>(+[] (int *left, int *right, int *top, int *bottom) { { if(buildparent && buildchild > 0) { buildparent->children[buildchild-1]->setclamp(*left, *right, *top, *bottom); } }; }), "iiii", Id_Command);
         addcommand("uiclamp*", reinterpret_cast<identfun>(+[] (int *left, int *right, int *top, int *bottom) { { if(buildparent) { for(int i = 0; i < buildchild; ++i) { buildparent->children[i]->setclamp(*left, *right, *top, *bottom); } } }; }), "iiii", Id_Command);
@@ -4652,7 +4754,10 @@ namespace UI
         addcommand("uicircleoutline", reinterpret_cast<identfun>(+[] (int *c, float *size, uint *children) { BUILD(Circle, o, o->setup(Color(*c), *size, Circle::OUTLINE), children); }), "ife", Id_Command);
         addcommand("uimodcircle", reinterpret_cast<identfun>(+[] (int *c, float *size, uint *children) { BUILD(Circle, o, o->setup(Color(*c), *size, Circle::MODULATE), children); }), "ife", Id_Command);
         addcommand("uicolortext", reinterpret_cast<identfun>(+[] (tagval *text, int *c, float *scale, uint *children) { buildtext(*text, *scale, uitextscale, Color(*c), -1, children); }), "tife", Id_Command);
-        addcommand("uitext", reinterpret_cast<identfun>(+[] (tagval *text, float *scale, uint *children) { buildtext(*text, *scale, uitextscale, Color(255, 255, 255), -1, children); }), "tfe", Id_Command);
+        addcommand("uitext", reinterpret_cast<identfun>(+[] (tagval *text, float *scale, uint *children)
+        {
+            buildtext(*text, *scale, uitextscale, Color(255, 255, 255), -1, children);
+        }), "tfe", Id_Command);
         addcommand("uitextfill", reinterpret_cast<identfun>(+[] (float *minw, float *minh, uint *children) { BUILD(Filler, o, o->setup(*minw * uitextscale*0.5f, *minh * uitextscale), children); }), "ffe", Id_Command);
         addcommand("uiwrapcolortext", reinterpret_cast<identfun>(+[] (tagval *text, float *wrap, int *c, float *scale, uint *children) { buildtext(*text, *scale, uitextscale, Color(*c), *wrap, children); }), "tfife", Id_Command);
         addcommand("uiwraptext", reinterpret_cast<identfun>(+[] (tagval *text, float *wrap, float *scale, uint *children) { buildtext(*text, *scale, uitextscale, Color(255, 255, 255), *wrap, children); }), "tffe", Id_Command);
@@ -4676,6 +4781,11 @@ namespace UI
         addcommand("uiprefabpreview", reinterpret_cast<identfun>(+[] (char *prefab, int *color, float *minw, float *minh, uint *children) { BUILD(PrefabPreview, o, o->setup(prefab, *color, *minw, *minh), children); }), "siffe", Id_Command);
         addcommand("uislotview", reinterpret_cast<identfun>(+[] (int *index, float *minw, float *minh, uint *children) { BUILD(SlotViewer, o, o->setup(*index, *minw, *minh), children); }), "iffe", Id_Command);
         addcommand("uivslotview", reinterpret_cast<identfun>(+[] (int *index, float *minw, float *minh, uint *children) { BUILD(VSlotViewer, o, o->setup(*index, *minw, *minh), children); }), "iffe", Id_Command);
+
+        addcommand("uicontextscale", reinterpret_cast<identfun>(uicontextscalecmd), "", Id_Command);
+        addcommand("newui", reinterpret_cast<identfun>(newui), "ssss", Id_Command);
+        addcommand("uiallowinput", reinterpret_cast<identfun>(uiallowinput), "b", Id_Command);
+        addcommand("uieschide", reinterpret_cast<identfun>(uieschide), "b", Id_Command);
     }
 
     bool hascursor()
@@ -4709,8 +4819,8 @@ namespace UI
         {
             return false;
         }
-        cursorx = std::clamp(cursorx + dx*uisensitivity/hudw, 0.0f, 1.0f);
-        cursory = std::clamp(cursory + dy*uisensitivity/hudh, 0.0f, 1.0f);
+        cursorx = std::clamp(cursorx + dx*uisensitivity/hudw(), 0.0f, 1.0f);
+        cursory = std::clamp(cursory + dy*uisensitivity/hudh(), 0.0f, 1.0f);
         return true;
     }
 
@@ -4789,8 +4899,11 @@ namespace UI
 
     void cleanup()
     {
-        world->children.resize(0);
-        ENUMERATE(windows, Window *, w, delete w);
+        world->children.clear();
+        for(auto &[k, i] : windows)
+        {
+            delete i;
+        }
         windows.clear();
         if(world)
         {
@@ -4803,8 +4916,8 @@ namespace UI
     {
         uitextscale = 1.0f/uitextrows;
 
-        int tw = hudw,
-            th = hudh;
+        int tw = hudw(),
+            th = hudh();
         if(forceaspect)
         {
             tw = static_cast<int>(std::ceil(th*forceaspect));

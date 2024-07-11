@@ -21,6 +21,8 @@
 #include "rendergl.h"
 #include "renderlights.h"
 #include "rendertimers.h"
+#include "shader.h"
+#include "shaderparam.h"
 #include "texture.h"
 
 #include "interface/control.h"
@@ -33,13 +35,14 @@ int bloomw = -1,
 
 //gl buffers needed for bloom effect
 GLuint hdrfbo = 0,
-       hdrtex = 0,
-       bloompbo = 0,
-       bloomfbo[6] = { 0, 0, 0, 0, 0, 0 },
-       bloomtex[6] = { 0, 0, 0, 0, 0, 0 };
+       hdrtex = 0;
 
 namespace
 {
+    GLuint bloompbo = 0,
+           bloomfbo[6] = { 0, 0, 0, 0, 0, 0 },
+           bloomtex[6] = { 0, 0, 0, 0, 0, 0 };
+
     GLenum bloomformat = 0;
     int lasthdraccum = 0;
 
@@ -284,7 +287,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
         {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, mshdrfbo);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdrfbo);
-            glBlitFramebuffer_(0, 0, vieww, viewh, 0, 0, vieww, viewh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBlitFramebuffer(0, 0, vieww, viewh, 0, 0, vieww, viewh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         }
         else if(hasFBMSBS && (vieww > bloomw || viewh > bloomh))
         {
@@ -292,7 +295,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
                 ch = std::max(viewh/2, bloomh);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, mshdrfbo);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdrfbo);
-            glBlitFramebuffer_(0, 0, vieww, viewh, 0, 0, cw, ch, GL_COLOR_BUFFER_BIT, GL_SCALED_RESOLVE_FASTEST_EXT);
+            glBlitFramebuffer(0, 0, vieww, viewh, 0, 0, cw, ch, GL_COLOR_BUFFER_BIT, GL_SCALED_RESOLVE_FASTEST_EXT);
             pw = cw;
             ph = ch;
         }
@@ -465,9 +468,9 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
     b0w = b1w = bloomw;
     b0h = b1h = bloomh;
 
-    glActiveTexture_(GL_TEXTURE2);
+    glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, bloomtex[4]);
-    glActiveTexture_(GL_TEXTURE0);
+    glActiveTexture(GL_TEXTURE0);
 
     glBindFramebuffer(GL_FRAMEBUFFER, b0fbo);
     glViewport(0, 0, b0w, b0h);
@@ -477,14 +480,14 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
 
     if(bloomblur)
     {
-        float blurweights[maxblurradius+1],
-              bluroffsets[maxblurradius+1];
-        setupblurkernel(bloomblur, blurweights, bluroffsets);
+        std::array<float, maxblurradius+1> blurweights,
+                                           bluroffsets;
+        setupblurkernel(bloomblur, blurweights.data(), bluroffsets.data());
         for(int i = 0; i < (2 + 2*bloomiter); ++i)
         {
             glBindFramebuffer(GL_FRAMEBUFFER, b1fbo);
             glViewport(0, 0, b1w, b1h);
-            setblurshader(i%2, 1, bloomblur, blurweights, bluroffsets, GL_TEXTURE_RECTANGLE);
+            setblurshader(i%2, 1, bloomblur, blurweights.data(), bluroffsets.data(), GL_TEXTURE_RECTANGLE);
             glBindTexture(GL_TEXTURE_RECTANGLE, b0tex);
             screenquad(b0w, b0h);
             std::swap(b0w, b1w);
@@ -499,9 +502,9 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
         glBindFramebuffer(GL_FRAMEBUFFER, outfbo);
         glViewport(0, 0, vieww, viewh);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, mshdrtex);
-        glActiveTexture_(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, b0tex);
-        glActiveTexture_(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE0);
         switch(aa)
         {
             case AA_SplitLuma:
@@ -512,7 +515,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
             case AA_SplitMasked:
             {
                 SETSHADER(msaatonemapsplitmasked);
-                gbuf.setaavelocityparams(GL_TEXTURE3);
+                setaavelocityparams(GL_TEXTURE3);
                 break;
             }
             default:
@@ -528,9 +531,9 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
         glBindFramebuffer(GL_FRAMEBUFFER, outfbo);
         glViewport(0, 0, vieww, viewh);
         glBindTexture(GL_TEXTURE_RECTANGLE, hdrtex);
-        glActiveTexture_(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, b0tex);
-        glActiveTexture_(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE0);
         switch(aa)
         {
             case AA_Luma:
@@ -555,7 +558,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
                     goto done; //see bottom of fxn
                 }
                 SETSHADER(hdrtonemapmasked);
-                gbuf.setaavelocityparams(GL_TEXTURE3);
+                setaavelocityparams(GL_TEXTURE3);
                 break;
             }
             default:
@@ -573,9 +576,9 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
         glBindFramebuffer(GL_FRAMEBUFFER, blit ? msrefractfbo : outfbo);
         glViewport(0, 0, vieww, viewh);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, mshdrtex);
-        glActiveTexture_(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, b0tex);
-        glActiveTexture_(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE0);
 
         if(blit)
         {
@@ -593,7 +596,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
                 case AA_Masked:
                 {
                     SETSHADER(msaatonemapmasked);
-                    gbuf.setaavelocityparams(GL_TEXTURE3);
+                    setaavelocityparams(GL_TEXTURE3);
                     break;
                 }
                 default:
@@ -609,7 +612,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
         {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, msrefractfbo);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, aa || !outfbo ? refractfbo : outfbo);
-            glBlitFramebuffer_(0, 0, vieww, viewh, 0, 0, vieww, viewh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBlitFramebuffer(0, 0, vieww, viewh, 0, 0, vieww, viewh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
             if(!outfbo)
             {
@@ -631,7 +634,7 @@ void GBuffer::processhdr(GLuint outfbo, int aa)
                         case AA_Masked:
                         {
                             SETSHADER(hdrnopmasked);
-                            gbuf.setaavelocityparams(GL_TEXTURE3);
+                            setaavelocityparams(GL_TEXTURE3);
                             break;
                         }
                         default:

@@ -9,6 +9,7 @@
 bin_unix/*
 src/tess_client
 src/tess_server
+test/libprimis_testsuite
 .idea/
 *.gcov
 *.gcda
@@ -16,13 +17,20 @@ src/tess_server
 *.srctrldb
 *.srctrlbm
 *.srctrlprj
-# Files auto-produced by VSCode.
-.vscode/
-.ionide/
+.ionide
+# Files auto-produced by CMake
+cmake-build-*/
 # Documentation files in the docs folder.
 docs
-# zig build files
-src/zig-out
-src/zig-cache
-
-.fake
+# C/C++ language server cache.
+.ccls-cache/
+# Ignore Code Spell Checker plugin files.
+cspell.json
+# Ignore html folder produced by Doxygen/Doxywizard.
+html/
+# Ignore common IDE/code editor directories
+.vscode/
+src/vcpp/.vs/
+src/vcpp/Release64/
+src/vcpp/libprimis.vcxproj.user
+.clangd

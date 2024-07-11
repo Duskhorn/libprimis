@@ -18,7 +18,6 @@ extern void forcenextundo();
 extern void multiplayerwarn();
 extern void cancelsel();
 extern void rendertexturepanel(int w, int h);
-extern void commitchanges(bool force = false);
 extern bool noedit(bool view = false, bool msg = true);
 
 extern void compactmruvslots();
@@ -27,7 +26,6 @@ extern void previewprefab(const char *name, const vec &color);
 extern void cleanupprefabs();
 
 struct editinfo;
-extern editinfo *localedit;
 extern void pruneundos(int maxremain = 0);
 extern bool mpreplacetex(int oldtex, int newtex, bool insel, selinfo &sel, ucharbuf &buf);
 

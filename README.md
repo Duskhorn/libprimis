@@ -2,29 +2,27 @@
 
 [![windows](https://github.com/project-imprimis/libprimis/actions/workflows/msbuild.yml/badge.svg)](https://github.com/project-imprimis/libprimis/actions/workflows/msbuild.yml)
 [![ubuntu](https://github.com/project-imprimis/libprimis/actions/workflows/makefile.yml/badge.svg)](https://github.com/project-imprimis/libprimis/actions/workflows/makefile.yml)
+[![ubuntu](https://github.com/project-imprimis/libprimis/actions/workflows/clang.yml/badge.svg)](https://github.com/project-imprimis/libprimis/actions/workflows/clang.yml)
+[![ubuntu](https://project-imprimis.github.io/libprimis/lcov/coverage.svg)](https://project-imprimis.github.io/libprimis/lcov/)
 
 ## Documentation
 
-  - [API Documentation Website](https://project-imprimis.github.io/libprimis/)
-  - [Engine](doc/engine.md)
-  - [Interaface](doc/interface.md)
-  - [Tesseract Renderer](doc/tesseract-renderer.md)
-  - [Timeline](doc/timeline.md)
+  - [API Documentation](https://project-imprimis.github.io/libprimis/)
+  - [Test Coverage](https://project-imprimis.github.io/libprimis/lcov/)
+  - [Tesseract Renderer Overview](doc/tesseract-renderer.md)
 
-Check out the project [timeline](doc/timeline.md) to see future plans!
+## An Open Source Engine Library
 
-## An Open Source Standalone Engine
-
-Libprimis is a game engine, based on Tesseract and the Cube 2 family of programs.
+Libprimis is a 3D game engine, based on Tesseract and the Cube 2 family of programs.
 Unlike the Cube/Cube 2/Tesseract games, which featured tightly integrated rendering
-and game code, however, Libprimis is *just an engine*.
+and game code, however, Libprimis is an engine without accompanying game code,
+providing developers the freedom to develop games without being forced into the
+same design paradigms of the original Cube games.
 
-Libprimis allows game makers to build unique and distinct games by providing an
-API for its octree-based geometry system. While this is not particularly exceptional
-for a game engine (which obviously have to have an API of some sort), Libprimis is
-the first adaptation of the Cube2/Tesseract capable of providing the power of the
-octree without dealing with confusing and poorly defined boundaries between game
-and rendering code.
+Libprimis' world uses octree subdivision to recursively subdivide the world into
+an efficient, sparsely populated tree of cubes. This representation provides numerous
+advantages over "polygon soup" type vertex representations, especially for performance
+in the critical occlusion and physics calculations required for many applications.
 
 With many modern features, including realtime deferred shading, volumetric lighting, and
 tone mapping support, Libprimis' core is fast, capable, and modern, and fully open sourced.
@@ -49,6 +47,8 @@ Libprimis' Tesseract base provides a bunch of rendering features such as:
 * support for OpenGL 4.0+ contexts
 * support for Windows and Linux-based operating systems
 * support for realtime geometry modification during gameplay
+* Unicode UTF-8 text support
+* GLTF, MD5, and OBJ model support
 
 For documentation on the engine, see [engine](doc/engine.md).
 
@@ -85,10 +85,10 @@ and drivers for OpenGL (usually already installed). To compile the library, the 
 versions of the libraries are required (on distros that seperate standard and dev packages).
 
 Once the library has been compiled, it should be placed the standard shared library folder
-(usually `/usr/lib/`) where it can be linked to. Alternatively, use `make -Csrc install` to
-automatically compile and install the library to `/usr/lib/`. Distros without `sudo` or
-which do not have their `ld` library path at `/usr/lib` can configure the Makefile to
-point to the appropriate location or copy the file manually to their `ld` library path.
+(usually `/usr/lib/` or `/usr/local/lib`) where it can be linked to. Alternatively, use
+`make -Csrc install` to automatically compile and install the library to `/usr/lib/`. Distros
+without `sudo` or which do not have their `ld` library path at `/usr/lib` can configure the
+Makefile to point to the appropriate location or copy the file manually to their `ld` library path.
 
 To build a game on libprimis, you will then need to get the required headers (located in
 a separate repository) and build your game against these headers and the shared library.

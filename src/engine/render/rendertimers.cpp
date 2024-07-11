@@ -12,6 +12,7 @@
 
 #include "rendergl.h"
 #include "rendertext.h"
+#include "renderttf.h"
 #include "renderva.h"
 
 #include "interface/control.h"
@@ -28,7 +29,7 @@ struct timer
     };
     const char *name;               //name the timer reports as
     bool gpu;                       //whether the timer is for gpu time (true) or cpu time
-    GLuint query[Timer_MaxQuery];   //gpu query information
+    std::array<GLuint, Timer_MaxQuery> query; //gpu query information
     int waiting;                    //internal bitmask for queries
     uint starttime;                 //time the timer was started (in terms of ms since game started)
     float result,                   //raw value of the timer, -1 if no info available
@@ -38,29 +39,30 @@ struct timer
 //locally relevant functionality
 namespace
 {
-    static vector<timer> timers;
-    static vector<int> timerorder;
-    static int timercycle = 0;
+    std::vector<timer> timers;
+    std::vector<uint> timerorder;
+    uint timercycle = 0;
 
     timer *findtimer(const char *name, bool gpu) //also creates a new timer if none found
     {
-        for(int i = 0; i < timers.length(); i++)
+        for(uint i = 0; i < timers.size(); i++)
         {
             if(!std::strcmp(timers[i].name, name) && timers[i].gpu == gpu)
             {
-                timerorder.removeobj(i);
-                timerorder.add(i);
+                timerorder.erase(std::find(timerorder.begin(), timerorder.end(), i));
+                timerorder.push_back(i);
                 return &timers[i];
             }
         }
-        timerorder.add(timers.length());
-        timer &t = timers.add();
+        timerorder.push_back(timers.size());
+        timers.emplace_back();
+        timer &t = timers.back();
         t.name = name;
         t.gpu = gpu;
-        memset(t.query, 0, sizeof(t.query));
+        t.query.fill(0);
         if(gpu)
         {
-            glGenQueries(timer::Timer_MaxQuery, t.query);
+            glGenQueries(timer::Timer_MaxQuery, t.query.data());
         }
         t.waiting = 0;
         t.starttime = 0;
@@ -127,9 +129,8 @@ void synctimers()
 {
     timercycle = (timercycle + 1) % timer::Timer_MaxQuery;
 
-    for(int i = 0; i < timers.length(); i++)
+    for(timer& t : timers)
     {
-        timer &t = timers[i];
         if(t.waiting&(1<<timercycle))
         {
             GLint available = 0;
@@ -138,7 +139,7 @@ void synctimers()
                 glGetQueryObjectiv(t.query[timercycle], GL_QUERY_RESULT_AVAILABLE, &available);
             }
             GLuint64EXT result = 0;
-            glGetQueryObjectui64v_(t.query[timercycle], GL_QUERY_RESULT, &result);
+            glGetQueryObjectui64v(t.query[timercycle], GL_QUERY_RESULT, &result);
             t.result = std::max(static_cast<float>(result) * 1e-6f, 0.0f);
             t.waiting &= ~(1<<timercycle);
         }
@@ -157,16 +158,15 @@ void synctimers()
  */
 void cleanuptimers()
 {
-    for(int i = 0; i < timers.length(); i++)
+    for(const timer& t : timers)
     {
-        timer &t = timers[i];
         if(t.gpu)
         {
-            glDeleteQueries(timer::Timer_MaxQuery, t.query);
+            glDeleteQueries(timer::Timer_MaxQuery, t.query.data());
         }
     }
-    timers.shrink(0);
-    timerorder.shrink(0);
+    timers.clear();
+    timerorder.clear();
 }
 
 /*
@@ -190,14 +190,19 @@ void printtimers(int conw, int conh, int framemillis)
         {
             printmillis = framemillis;
         }
-        draw_textf("frame time %i ms", conw-20*FONTH, conh-FONTH*3/2-offset*9*FONTH/8, printmillis);
+        char framestring[200];
+        constexpr int size = 42;
+        std::sprintf(framestring, "frame time %i ms", printmillis);
+        ttr.fontsize(size);
+        ttr.renderttf(framestring, {0xFF, 0xFF, 0xFF, 0}, conw-20*size, size*3/2+offset*9*size/8);
+        //draw_textf("frame time %i ms", conw-20*FONTH, conh-FONTH*3/2-offset*9*FONTH/8, printmillis);
         offset++;
     }
     if(usetimers)
     {
-        for(int i = 0; i < timerorder.length(); i++)
+        for(int i : timerorder)
         {
-            timer &t = timers[timerorder[i]];
+            timer &t = timers[i];
             if(t.print < 0 ? t.result >= 0 : totalmillis - lastprint >= 200)
             {
                 t.print = t.result;
@@ -206,7 +211,13 @@ void printtimers(int conw, int conh, int framemillis)
             {
                 continue;
             }
-            draw_textf("%s%s %5.2f ms", conw-20*FONTH, conh-FONTH*3/2-offset*9*FONTH/8, t.name, t.gpu ? "" : " (cpu)", t.print);
+            char framestring[200];
+            constexpr int size = 42;
+            std::sprintf(framestring, "%s%s %5.2f ms", t.name, t.gpu ? "" : " (cpu)", t.print);
+            ttr.fontsize(size);
+            ttr.renderttf(framestring, {0xFF, 0xFF, 0xFF, 0}, conw-20*size, size*3/2+offset*9*size/8);
+
+            //draw_textf("%s%s %5.2f ms", conw-20*FONTH, conh-FONTH*3/2-offset*9*FONTH/8, t.name, t.gpu ? "" : " (cpu)", t.print);
             offset++;
         }
     }

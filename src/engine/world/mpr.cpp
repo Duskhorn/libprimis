@@ -15,6 +15,9 @@
 
 namespace mpr
 {
+
+    //CubePlanes
+
     vec CubePlanes::center() const
     {
         return p.o;
@@ -35,6 +38,8 @@ namespace mpr
         }
         return p.v[besti];
     }
+
+    //SolidCube
 
     vec SolidCube::center() const
     {
@@ -59,9 +64,18 @@ namespace mpr
         return p;
     }
 
+    //Ent
+
     vec Ent::center() const
     {
         return vec(ent->o.x, ent->o.y, ent->o.z + (ent->aboveeye - ent->eyeheight)/2);
+    }
+
+    //EntOBB
+
+    EntOBB::EntOBB(const physent *ent) : Ent(ent)
+    {
+        orient.setyaw(ent->yaw/RAD);
     }
 
     vec EntOBB::contactface(const vec &wn, const vec &wdir) const
@@ -120,12 +134,16 @@ namespace mpr
     float EntOBB::bottom() const { return ent->o.z - ent->eyeheight; }
     float EntOBB::top()    const { return ent->o.z + ent->aboveeye; }
 
+    //EntFuzzy
+
     float EntFuzzy::left()   const { return ent->o.x - ent->radius; }
     float EntFuzzy::right()  const { return ent->o.x + ent->radius; }
     float EntFuzzy::back()   const { return ent->o.y - ent->radius; }
     float EntFuzzy::front()  const { return ent->o.y + ent->radius; }
     float EntFuzzy::bottom() const { return ent->o.z - ent->eyeheight; }
     float EntFuzzy::top()    const { return ent->o.z + ent->aboveeye; }
+
+    //EntCylinder
 
     vec EntCylinder::contactface(const vec &n, const vec &dir) const
     {
@@ -165,6 +183,8 @@ namespace mpr
         return p;
     }
 
+    //EntCapsule
+
     vec EntCapsule::supportpoint(const vec &n) const
     {
         vec p(ent->o);
@@ -180,6 +200,8 @@ namespace mpr
         return p;
     }
 
+    //EntEllipsoid
+
     vec EntEllipsoid::supportpoint(const vec &dir) const
     {
         vec p(ent->o);
@@ -190,10 +212,32 @@ namespace mpr
         return p;
     }
 
+    //Model
+
+    Model::Model(const vec &ent, const vec &center, const vec &radius, int yaw, int pitch, int roll) : o(ent), radius(radius)
+    {
+        orient.identity();
+        if(roll)
+        {
+            orient.rotate_around_y(sincosmod360(roll));
+        }
+        if(pitch)
+        {
+            orient.rotate_around_x(sincosmod360(-pitch));
+        }
+        if(yaw)
+        {
+            orient.rotate_around_z(sincosmod360(-yaw));
+        }
+        o.add(orient.transposedtransform(center));
+    }
+
     vec Model::center() const
     {
         return o;
     }
+
+    //ModelOBB
 
     vec ModelOBB::contactface(const vec &wn, const vec &wdir) const
     {
@@ -225,7 +269,8 @@ namespace mpr
 
     vec ModelOBB::supportpoint(const vec &n) const
     {
-        vec ln = orient.transform(n), p(0, 0, 0);
+        vec ln = orient.transform(n),
+            p(0, 0, 0);
         if(ln.x > 0)
         {
             p.x += radius.x;
@@ -252,6 +297,8 @@ namespace mpr
         }
         return orient.transposedtransform(p).add(o);
     }
+
+    //ModelEllipse
 
     vec ModelEllipse::contactface(const vec &wn, const vec &wdir) const
     {

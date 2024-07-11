@@ -17,7 +17,6 @@
 #include "bih.h"
 #include "entities.h"
 #include "octaworld.h"
-#include "physics.h"
 #include "raycube.h"
 #include "world/world.h"
 
@@ -34,85 +33,97 @@ namespace
         return p;
     }
 
-    //==================================================INTERSECTPLANES INTERSECTBOX
-    #define INTERSECTPLANES(setentry, exit) \
-        float enterdist = -1e16f, \
-              exitdist  = 1e16f; \
-        for(int i = 0; i < p.size; ++i) \
-        { \
-            float pdist = p.p[i].dist(v), \
-                  facing = ray.dot(p.p[i]); \
-            if(facing < 0) \
-            { \
-                pdist /= -facing; \
-                if(pdist > enterdist) \
-                { \
-                    if(pdist > exitdist) \
-                    { \
-                        exit; \
-                    } \
-                    enterdist = pdist; \
-                    setentry; \
-                } \
-            } \
-            else if(facing > 0) \
-            { \
-                pdist /= -facing; \
-                if(pdist < exitdist) \
-                { \
-                    if(pdist < enterdist) \
-                    { \
-                        exit; \
-                    } \
-                    exitdist = pdist; \
-                } \
-            } \
-            else if(pdist > 0) \
-            { \
-                exit; \
-            } \
-        }
+    //============================================================= INTERSECTBOX
 
-    #define INTERSECTBOX(setentry, exit) \
-        for(int i = 0; i < 3; ++i) \
-        { \
-            if(ray[i]) \
-            { \
-                float prad = std::fabs(p.r[i] * invray[i]), \
-                      pdist = (p.o[i] - v[i]) * invray[i], \
-                      pmin = pdist - prad, \
-                      pmax = pdist + prad; \
-                if(pmin > enterdist) \
-                { \
-                    if(pmin > exitdist) \
-                    { \
-                        exit; \
-                    } \
-                    enterdist = pmin; \
-                    setentry; \
-                } \
-                if(pmax < exitdist) \
-                { \
-                    if(pmax < enterdist) \
-                    { \
-                        exit; \
-                    } \
-                    exitdist = pmax; \
-                } \
-            } \
-            else if(v[i] < p.o[i]-p.r[i] || v[i] > p.o[i]+p.r[i]) \
-            { \
-                exit; \
-            } \
+    static bool intersectplanes(const clipplanes& p, const vec &v, const vec& ray, float &enterdist, float &exitdist, int &entry)
+    {
+        for(int i = 0; i < p.size; ++i)
+        {
+            float pdist = p.p[i].dist(v),
+                  facing = ray.dot(p.p[i]);
+            if(facing < 0)
+            {
+                pdist /= -facing;
+                if(pdist > enterdist)
+                {
+                    if(pdist > exitdist)
+                    {
+                        return false;
+                    }
+                    enterdist = pdist;
+                    entry = i;
+                }
+            }
+            else if(facing > 0)
+            {
+                pdist /= -facing;
+                if(pdist < exitdist)
+                {
+                    if(pdist < enterdist)
+                    {
+                        return false;
+                    }
+                    exitdist = pdist;
+                }
+            }
+            else if(pdist > 0)
+            {
+                return false;
+            }
         }
+        return true;
+    }
 
+    static bool intersectbox(const clipplanes& p, const vec &v, const vec& ray, const vec& invray, float &enterdist, float &exitdist, int &entry)
+    {
+        for(int i = 0; i < 3; ++i)
+        {
+            if(ray[i])
+            {
+                float prad = std::fabs(p.r[i] * invray[i]),
+                      pdist = (p.o[i] - v[i]) * invray[i],
+                      pmin = pdist - prad,
+                      pmax = pdist + prad;
+                if(pmin > enterdist)
+                {
+                    if(pmin > exitdist)
+                    {
+                        return false;
+                    }
+                    enterdist = pmin;
+                    entry = i;
+                }
+                if(pmax < exitdist)
+                {
+                    if(pmax < enterdist)
+                    {
+                        return false;
+                    }
+                    exitdist = pmax;
+                }
+            }
+            else if(v[i] < p.o[i]-p.r[i] || v[i] > p.o[i]+p.r[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     bool raycubeintersect(const clipplanes &p, const cube &c, const vec &v, const vec &ray, const vec &invray, float maxdist, float &dist)
     {
         int entry   = -1,
             bbentry = -1;
-        INTERSECTPLANES(entry = i, return false);
-        INTERSECTBOX(bbentry = i, return false);
+        float enterdist = -1e16f,
+              exitdist  = 1e16f;
+        if(!intersectplanes(p, v, ray, enterdist, exitdist, entry))
+        {
+            return false;
+        }
+        if(!intersectbox(p, v, ray, invray, enterdist, exitdist, bbentry))
+        {
+            return false;
+        }
         if(exitdist < 0)
         {
             return false;
@@ -136,16 +147,16 @@ namespace
     float hitentdist;
     int hitent, hitorient;
 
-    float disttoent(octaentities *oc, const vec &o, const vec &ray, float radius, int mode, extentity *t)
+    float disttoent(const octaentities *oc, const vec &o, const vec &ray, float radius, int mode, const extentity *t)
     {
         vec eo, es;
         int orient = -1;
         float dist = radius,
               f = 0.0f;
-        const vector<extentity *> &ents = entities::getents();
+        const std::vector<extentity *> &ents = entities::getents();
     //=======ENT_SEL_INTERSECT ENT_INTERSECT
         #define ENT_INTERSECT(type, func) do { \
-            for(int i = 0; i < oc->type.length(); i++) \
+            for(uint i = 0; i < oc->type.size(); i++) \
             { \
                 extentity &e = *ents[oc->type[i]]; \
                 if(!(e.flags&EntFlag_Octa) || &e==t) \
@@ -193,16 +204,16 @@ namespace
     #undef ENT_INTERSECT
     #undef ENT_SEL_INTERSECT
     //======================================
-    float disttooutsideent(const vec &o, const vec &ray, float radius, int mode, extentity *t)
+    float disttooutsideent(const vec &o, const vec &ray, float radius, int mode, const extentity *t)
     {
         vec eo, es;
         int orient;
         float dist = radius,
               f = 0.0f;
-        const vector<extentity *> &ents = entities::getents();
-        for(int i = 0; i < outsideents.length(); i++)
+        const std::vector<extentity *> &ents = entities::getents();
+        for(const int &i : outsideents)
         {
-            extentity &e = *ents[outsideents[i]];
+            extentity &e = *ents[i];
             if(!(e.flags&EntFlag_Octa) || &e == t)
             {
                 continue;
@@ -223,14 +234,14 @@ namespace
     }
 
     // optimized shadow version
-    float shadowent(octaentities *oc, const vec &o, const vec &ray, float radius, int mode, extentity *t)
+    float shadowent(const octaentities *oc, const vec &o, const vec &ray, float radius, int mode, const extentity *t)
     {
         float dist = radius,
               f = 0.0f;
-        const vector<extentity *> &ents = entities::getents();
-        for(int i = 0; i < oc->mapmodels.length(); i++)
+        const std::vector<extentity *> &ents = entities::getents();
+        for(const int &i : oc->mapmodels)
         {
-            extentity &e = *ents[oc->mapmodels[i]];
+            const extentity &e = *ents[i];
             if(!(e.flags&EntFlag_Octa) || &e==t)
             {
                 continue;
@@ -251,57 +262,66 @@ namespace
 //externally relevant functionality
 bool insideworld(const vec &o)
 {
-    return o.x>=0 && o.x<worldsize && o.y>=0 && o.y<worldsize && o.z>=0 && o.z<worldsize;
+    return o.x>=0 && o.x<rootworld.mapsize() && o.y>=0 && o.y<rootworld.mapsize() && o.z>=0 && o.z<rootworld.mapsize();
 }
 
 bool insideworld(const ivec &o)
 {
-    return static_cast<uint>(o.x) < static_cast<uint>(worldsize) &&
-           static_cast<uint>(o.y) < static_cast<uint>(worldsize) &&
-           static_cast<uint>(o.z) < static_cast<uint>(worldsize);
+    return static_cast<uint>(o.x) < static_cast<uint>(rootworld.mapsize()) &&
+           static_cast<uint>(o.y) < static_cast<uint>(rootworld.mapsize()) &&
+           static_cast<uint>(o.z) < static_cast<uint>(rootworld.mapsize());
 }
 
 vec hitsurface;
 
 //==================INITRAYCUBE CHECKINSIDEWORLD DOWNOCTREE FINDCLOSEST UPOCTREE
+
+//NOTE: levels[20] magically assumes mapscale <20
 #define INITRAYCUBE \
     float dist = 0, \
           dent = radius > 0 ? radius : 1e16f; \
     vec v(o), \
         invray(ray.x ? 1/ray.x : 1e16f, ray.y ? 1/ray.y : 1e16f, ray.z ? 1/ray.z : 1e16f); \
     cube *levels[20]; \
-    levels[worldscale] = worldroot; \
+    levels[worldscale] = &(*worldroot)[0]; \
     int lshift = worldscale, \
         elvl = mode&Ray_BB ? worldscale : 0; \
     ivec lsizemask(invray.x>0 ? 1 : 0, invray.y>0 ? 1 : 0, invray.z>0 ? 1 : 0); \
 
-#define CHECKINSIDEWORLD \
-    if(!insideworld(o)) \
-    { \
-        float disttoworld = 0, \
-              exitworld = 1e16f; \
-        for(int i = 0; i < 3; ++i) \
-        { \
-            float c = v[i]; \
-            if(c<0 || c>=worldsize) \
-            { \
-                float d = ((invray[i]>0?0:worldsize)-c)*invray[i]; \
-                if(d<0) \
-                { \
-                    return (radius>0?radius:-1); \
-                } \
-                disttoworld = std::max(disttoworld, 0.1f + d); \
-            } \
-            float e = ((invray[i]>0?worldsize:0)-c)*invray[i]; \
-            exitworld = std::min(exitworld, e); \
-        } \
-        if(disttoworld > exitworld) \
-        { \
-            return (radius>0?radius:-1); \
-        } \
-        v.add(vec(ray).mul(disttoworld)); \
-        dist += disttoworld; \
+//will only change &outrad and &dist if not inside the world
+//true if outside world, false if inside
+bool cubeworld::checkinsideworld(const vec &invray, float radius, float &outrad, const vec &o, vec &v, const vec& ray, float &dist) const
+{
+    if(!insideworld(o))
+    {
+        float disttoworld = 0,
+              exitworld = 1e16f;
+        for(int i = 0; i < 3; ++i)
+        {
+            float c = v[i];
+            if(c<0 || c>=mapsize())
+            {
+                float d = ((invray[i]>0?0:mapsize())-c)*invray[i];
+                if(d<0)
+                {
+                    outrad =  radius>0 ? radius :-1;
+                    return true;
+                }
+                disttoworld = std::max(disttoworld, 0.1f + d);
+            }
+            float e = ((invray[i]>0?mapsize():0)-c)*invray[i];
+            exitworld = std::min(exitworld, e);
+        }
+        if(disttoworld > exitworld)
+        {
+            outrad = (radius>0?radius:-1);
+            return true;
+        }
+        v.add(vec(ray).mul(disttoworld));
+        dist += disttoworld;
     }
+    return false;
+}
 
 #define DOWNOCTREE(disttoent, earlyexit) \
         cube *lc = levels[lshift]; \
@@ -323,59 +343,70 @@ vec hitsurface;
             { \
                 break; \
             } \
-            lc = lc->children; \
+            lc = &(*lc->children)[0]; \
             levels[lshift] = lc; \
         }
 
-#define FINDCLOSEST(xclosest, yclosest, zclosest) \
-        float dx = (lo.x+(lsizemask.x<<lshift)-v.x)*invray.x, \
-              dy = (lo.y+(lsizemask.y<<lshift)-v.y)*invray.y, \
-              dz = (lo.z+(lsizemask.z<<lshift)-v.z)*invray.z; \
-        float disttonext = dx; \
-        xclosest; \
-        if(dy < disttonext) \
-        { \
-            disttonext = dy; \
-            yclosest; \
-        } \
-        if(dz < disttonext) \
-        { \
-            disttonext = dz; \
-            zclosest; \
-        } \
-        disttonext += 0.1f; \
-        v.add(vec(ray).mul(disttonext)); \
+static void findclosest(int &closest, int xval, int yval, int zval, const ivec &lsizemask, const vec &invray, const ivec &lo, const int &lshift, vec &v, float &dist, const vec& ray)
+{
+        float dx = (lo.x+(lsizemask.x<<lshift)-v.x)*invray.x,
+              dy = (lo.y+(lsizemask.y<<lshift)-v.y)*invray.y,
+              dz = (lo.z+(lsizemask.z<<lshift)-v.z)*invray.z;
+        float disttonext = dx;
+        closest = xval;
+        if(dy < disttonext)
+        {
+            disttonext = dy;
+            closest = yval;
+        }
+        if(dz < disttonext)
+        {
+            disttonext = dz;
+            closest = zval;
+        }
+        disttonext += 0.1f;
+        v.add(vec(ray).mul(disttonext));
         dist += disttonext;
+}
 
-#define UPOCTREE(exitworld) \
-        x = static_cast<int>(v.x); \
-        y = static_cast<int>(v.y); \
-        z = static_cast<int>(v.z); \
-        uint diff = static_cast<uint>(lo.x^x)|static_cast<uint>(lo.y^y)|static_cast<uint>(lo.z^z); \
-        if(diff >= static_cast<uint>(worldsize)) \
-        { \
-            exitworld; \
-        } \
-        diff >>= lshift; \
-        if(!diff) \
-        { \
-            exitworld; \
-        } \
-        do \
-        { \
-            lshift++; \
-            diff >>= 1; \
-        } while(diff);
+bool cubeworld::upoctree(const vec& v, int& x, int& y, int& z, const ivec& lo, int& lshift) const
+{
+    x = static_cast<int>(v.x);
+    y = static_cast<int>(v.y);
+    z = static_cast<int>(v.z);
+    uint diff = static_cast<uint>(lo.x^x)|static_cast<uint>(lo.y^y)|static_cast<uint>(lo.z^z);
+    if(diff >= static_cast<uint>(mapsize()))
+    {
+        return true;
+    }
+    diff >>= lshift;
+    if(!diff)
+    {
+        return true;
+    }
+    do
+    {
+        lshift++;
+        diff >>= 1;
+    } while(diff);
+    return false;
+}
 
-float cubeworld::raycube(const vec &o, const vec &ray, float radius, int mode, int size, extentity *t)
+float cubeworld::raycube(const vec &o, const vec &ray, float radius, int mode, int size, const extentity *t) const
 {
     if(ray.iszero())
     {
         return 0;
     }
     INITRAYCUBE;
-    CHECKINSIDEWORLD;
-
+    //scope limiting brackets
+    {
+        float outrad = 0.f;
+        if(checkinsideworld(invray, radius, outrad, o, v, ray, dist))
+        {
+            return outrad;
+        }
+    }
     int closest = -1,
         x = static_cast<int>(v.x),
         y = static_cast<int>(v.y),
@@ -422,21 +453,30 @@ float cubeworld::raycube(const vec &o, const vec &ray, float radius, int mode, i
                 return std::min(dent, dist+f);
             }
         }
-        FINDCLOSEST(closest = 0, closest = 1, closest = 2);
+        findclosest(closest, 0, 1, 2, lsizemask, invray, lo, lshift, v, dist, ray);
         if(radius>0 && dist>=radius)
         {
             return std::min(dent, dist);
         }
-        UPOCTREE(return std::min(dent, radius>0 ? radius : dist));
+        if(upoctree(v, x, y, z, lo, lshift))
+        {
+            return std::min(dent, radius>0 ? radius : dist);
+        }
     }
 }
 
 // optimized version for light shadowing... every cycle here counts!!!
-float cubeworld::shadowray(const vec &o, const vec &ray, float radius, int mode, extentity *t)
+float cubeworld::shadowray(const vec &o, const vec &ray, float radius, int mode, const extentity *t)
 {
     INITRAYCUBE;
-    CHECKINSIDEWORLD;
-
+    //scope limiting brackets
+    {
+        float outrad = 0.f;
+        if(checkinsideworld(invray, radius, outrad, o, v, ray, dist))
+        {
+            return outrad;
+        }
+    }
     int side = Orient_Bottom,
         x = static_cast<int>(v.x),
         y = static_cast<int>(v.y),
@@ -455,8 +495,21 @@ float cubeworld::shadowray(const vec &o, const vec &ray, float radius, int mode,
                 return c.texture[side]==Default_Sky && mode&Ray_SkipSky ? radius : dist;
             }
             const clipplanes &p = getclipplanes(c, lo, 1<<lshift);
-            INTERSECTPLANES(side = p.side[i], goto nextcube);
-            INTERSECTBOX(side = (i<<1) + 1 - lsizemask[i], goto nextcube);
+            float enterdist = -1e16f,
+                  exitdist  = 1e16f;
+            int i = 0;
+            bool intersected = intersectplanes(p, v, ray, enterdist, exitdist, i);
+            side = p.side[i];
+            if(!intersected)
+            {
+                goto nextcube;
+            }
+            intersected = intersectbox(p, v, ray, invray, enterdist, exitdist, i);
+            side = (i<<1) + 1 - lsizemask[i];
+            if(!intersected)
+            {
+                goto nextcube;
+            }
             if(exitdist >= 0)
             {
                 return c.texture[side]==Default_Sky && mode&Ray_SkipSky ? radius : dist+std::max(enterdist+0.1f, 0.0f);
@@ -464,21 +517,19 @@ float cubeworld::shadowray(const vec &o, const vec &ray, float radius, int mode,
         }
 
     nextcube:
-        FINDCLOSEST(side = Orient_Right - lsizemask.x, side = Orient_Front - lsizemask.y, side = Orient_Top - lsizemask.z);
+        findclosest(side, Orient_Right - lsizemask.x, Orient_Front - lsizemask.y, Orient_Top - lsizemask.z, lsizemask, invray, lo, lshift, v, dist, ray);
         if(dist>=radius)
         {
             return dist;
         }
-        UPOCTREE(return radius);
+        if(upoctree(v, x, y, z, lo, lshift))
+        {
+            return radius;
+        }
     }
 }
-#undef FINDCLOSEST
 #undef INITRAYCUBE
-#undef CHECKINSIDEWORLD
-#undef UPOCTREE
 #undef DOWNOCTREE
-#undef INTERSECTBOX
-#undef INTERSECTPLANES
 //==============================================================================
 float rayent(const vec &o, const vec &ray, float radius, int mode, int size, int &orient, int &ent)
 {
